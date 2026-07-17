@@ -16,10 +16,71 @@ import {
   Sparkles,
   Info,
   ChevronDown,
-  ChevronUp
+  ChevronUp,
+  Volume2,
+  VolumeX,
+  Bell,
+  BellOff
 } from "lucide-react";
 import { RoomConfig, EncryptedMessage } from "./types";
 import { encryptMessage, decryptMessage } from "./cryptoUtils";
+
+// Notification Audio Synthesizer using Web Audio API
+function playNotificationSound() {
+  try {
+    const audioCtx = new (window.AudioContext || (window as any).webkitAudioContext)();
+    const playBeep = (time: number, frequency: number, duration: number) => {
+      const osc = audioCtx.createOscillator();
+      const gain = audioCtx.createGain();
+      osc.type = "sine";
+      osc.frequency.setValueAtTime(frequency, time);
+      gain.gain.setValueAtTime(0, time);
+      gain.gain.linearRampToValueAtTime(0.12, time + 0.02);
+      gain.gain.exponentialRampToValueAtTime(0.0001, time + duration);
+      osc.connect(gain);
+      gain.connect(audioCtx.destination);
+      osc.start(time);
+      osc.stop(time + duration);
+    };
+    const now = audioCtx.currentTime;
+    playBeep(now, 587.33, 0.12); // D5
+    playBeep(now + 0.06, 880, 0.18); // A5
+  } catch (err) {
+    console.error("Ses çalınamadı:", err);
+  }
+}
+
+// Browser HTML5 Notification Helpers
+function requestNotificationPermission(callback: (granted: boolean) => void) {
+  if (!("Notification" in window)) {
+    alert("Bu tarayıcı bildirimleri desteklemiyor.");
+    callback(false);
+    return;
+  }
+  if (Notification.permission === "granted") {
+    callback(true);
+  } else if (Notification.permission !== "denied") {
+    Notification.requestPermission().then((permission) => {
+      callback(permission === "granted");
+    });
+  } else {
+    alert("Bildirim izinleri engellenmiş. Tarayıcınızın adres çubuğundaki kilit simgesinden izinleri açabilirsiniz.");
+    callback(false);
+  }
+}
+
+function showBrowserNotification(title: string, body: string) {
+  if (!("Notification" in window) || Notification.permission !== "granted") return;
+  try {
+    new Notification(title, {
+      body: body,
+      tag: "kripto-sohbet-msg",
+      renotify: true
+    });
+  } catch (err) {
+    console.error("Bildirim gösterilemedi:", err);
+  }
+}
 
 interface LocalMessage extends EncryptedMessage {
   text: string;
@@ -78,6 +139,20 @@ export default function App() {
 
   const messageEndRef = useRef<HTMLDivElement>(null);
 
+  // UI settings
+  const [soundEnabled, setSoundEnabled] = useState(true);
+  const [notificationsEnabled, setNotificationsEnabled] = useState(false);
+
+  // Scroll tracking states & refs
+  const [showScrollButton, setShowScrollButton] = useState(false);
+  const [unreadCount, setUnreadCount] = useState(0);
+  const chatContainerRef = useRef<HTMLDivElement>(null);
+  const isAtBottomRef = useRef(true);
+
+  // Presence system (Serverless peer online list)
+  const [activeUsers, setActiveUsers] = useState<Record<string, number>>({});
+  const isHistoryLoadedRef = useRef(false);
+
   // Check URL query parameters on mount to pre-populate room name and encryption key
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
@@ -96,6 +171,13 @@ export default function App() {
     if (!roomConfig) return;
 
     setSseStatus("connecting");
+    isHistoryLoadedRef.current = false;
+
+    // After 3 seconds, mark history as loaded to prevent playing sound for past messages
+    const historyTimer = setTimeout(() => {
+      isHistoryLoadedRef.current = true;
+    }, 3000);
+
     const eventSource = new EventSource(`https://ntfy.sh/${roomConfig.roomId}/sse?since=all`);
 
     eventSource.onopen = () => {
@@ -108,14 +190,12 @@ export default function App() {
         const ntfyData = JSON.parse(event.data);
         if (ntfyData.event !== "message") return; // skip open/keepalive
 
-        // The user message payload is stored as a string inside ntfyData.message
         const payload = JSON.parse(ntfyData.message);
         
         if (payload.type === "message") {
           const plainText = await decryptMessage(payload.message.ciphertext, payload.message.iv, roomConfig.passwordKey);
           
           setMessages((prev) => {
-            // Guard against duplicates
             if (prev.some((m) => m.id === payload.message.id)) return prev;
             const updated = [
               ...prev,
@@ -125,8 +205,39 @@ export default function App() {
                 decrypted: !plainText.startsWith("[Deşifre Edilemedi")
               }
             ];
+
+            // Auto-scroll logic if at the bottom or sent by current user
+            const isMe = payload.message.sender === roomConfig.username;
+            if (isMe || isAtBottomRef.current) {
+              setTimeout(() => {
+                scrollToBottom("smooth");
+              }, 50);
+            }
+
+            // Notification / Sound alert for real-time messages
+            if (isHistoryLoadedRef.current && !isMe) {
+              if (soundEnabled) {
+                playNotificationSound();
+              }
+              if (notificationsEnabled && document.hidden) {
+                showBrowserNotification(
+                  `Kripto Sohbet - ${payload.message.sender}`,
+                  plainText
+                );
+              }
+              if (!isAtBottomRef.current) {
+                setUnreadCount((prev) => prev + 1);
+              }
+            }
+
             return updated.sort((a, b) => a.timestamp - b.timestamp);
           });
+        } else if (payload.type === "presence") {
+          // Track active users
+          setActiveUsers((prev) => ({
+            ...prev,
+            [payload.username]: Date.now()
+          }));
         } else if (payload.type === "clear") {
           setMessages([]);
         }
@@ -141,14 +252,122 @@ export default function App() {
     };
 
     return () => {
+      clearTimeout(historyTimer);
       eventSource.close();
     };
+  }, [roomConfig, soundEnabled, notificationsEnabled]);
+
+  // Scroll to bottom programmatically
+  const scrollToBottom = (behavior: ScrollBehavior = "smooth") => {
+    const container = chatContainerRef.current;
+    if (container) {
+      container.scrollTo({
+        top: container.scrollHeight,
+        behavior
+      });
+    }
+    setUnreadCount(0);
+  };
+
+  // Scroll detection handler
+  const handleScroll = () => {
+    const container = chatContainerRef.current;
+    if (!container) return;
+
+    const threshold = 60;
+    const isCloseToBottom = 
+      container.scrollHeight - container.scrollTop - container.clientHeight < threshold;
+    
+    isAtBottomRef.current = isCloseToBottom;
+    setShowScrollButton(!isCloseToBottom);
+    
+    if (isCloseToBottom) {
+      setUnreadCount(0);
+    }
+  };
+
+  // Keep scroll focused at the bottom on initial load
+  useEffect(() => {
+    if (messages.length > 0 && !isHistoryLoadedRef.current) {
+      const timer = setTimeout(() => {
+        scrollToBottom("auto");
+      }, 100);
+      return () => clearTimeout(timer);
+    }
+  }, [messages]);
+
+  // Initialize/reset active users state when roomConfig changes
+  useEffect(() => {
+    if (roomConfig) {
+      setActiveUsers({ [roomConfig.username]: Date.now() });
+    } else {
+      setActiveUsers({});
+    }
   }, [roomConfig]);
 
-  // Scroll to bottom whenever messages list grows
+  // Send periodic presence ping
   useEffect(() => {
-    messageEndRef.current?.scrollIntoView({ behavior: "smooth" });
-  }, [messages]);
+    if (!roomConfig) return;
+
+    const sendPresence = async () => {
+      try {
+        const payload = {
+          type: "presence",
+          username: roomConfig.username
+        };
+        await fetch(`https://ntfy.sh/${roomConfig.roomId}`, {
+          method: "POST",
+          body: JSON.stringify(payload)
+        });
+      } catch (err) {
+        console.error("Presence sending failed:", err);
+      }
+    };
+
+    // Send immediately on join
+    sendPresence();
+
+    const interval = setInterval(sendPresence, 20000);
+    return () => clearInterval(interval);
+  }, [roomConfig]);
+
+  // Prune inactive users
+  useEffect(() => {
+    if (!roomConfig) return;
+
+    const pruneInterval = setInterval(() => {
+      const threshold = Date.now() - 45000;
+      setActiveUsers((prev) => {
+        const cleaned: Record<string, number> = {};
+        let changed = false;
+        
+        cleaned[roomConfig.username] = Date.now();
+        
+        for (const [user, time] of Object.entries(prev)) {
+          if (user === roomConfig.username) continue;
+          if (time > threshold) {
+            cleaned[user] = time;
+          } else {
+            changed = true;
+          }
+        }
+        return changed ? cleaned : prev;
+      });
+    }, 5000);
+
+    return () => clearInterval(pruneInterval);
+  }, [roomConfig]);
+
+  // Notification toggle handler
+  const handleToggleNotifications = () => {
+    if (notificationsEnabled) {
+      setNotificationsEnabled(false);
+    } else {
+      requestNotificationPermission((granted) => {
+        setNotificationsEnabled(granted);
+      });
+    }
+  };
 
   // Form submit to enter room
   const handleJoinRoom = (e: FormEvent) => {
@@ -269,7 +488,7 @@ export default function App() {
   };
 
   return (
-    <div className="min-h-screen bg-[#fdfdfd] text-[#1a1a1a] flex flex-col font-sans selection:bg-indigo-100 selection:text-indigo-900 relative">
+    <div className="h-[100dvh] overflow-hidden bg-[#fdfdfd] text-[#1a1a1a] flex flex-col font-sans selection:bg-indigo-100 selection:text-indigo-900 relative">
       
       {/* Background elegant grid pattern for minimal look */}
       <div className="absolute inset-0 bg-[linear-gradient(to_right,#f0f0f0_1px,transparent_1px),linear-gradient(to_bottom,#f0f0f0_1px,transparent_1px)] bg-[size:4rem_4rem] [mask-image:radial-gradient(ellipse_60%_50%_at_50%_0%,#000_70%,transparent_100%)] pointer-events-none opacity-40" />
@@ -405,10 +624,10 @@ export default function App() {
             initial={{ opacity: 0 }}
             animate={{ opacity: 1 }}
             exit={{ opacity: 0 }}
-            className="flex-1 flex flex-col max-w-5xl w-full mx-auto p-3 md:p-6 z-10"
+            className="flex-1 flex flex-col max-w-5xl w-full mx-auto p-3 md:p-6 z-10 overflow-hidden h-full"
           >
             {/* Upper Room Header Dashboard */}
-            <div className="bg-white border border-gray-100 rounded-t-2xl p-4 flex flex-col md:flex-row gap-3 items-start md:items-center justify-between shadow-sm">
+            <div className="bg-white border border-gray-100 rounded-t-2xl p-4 flex flex-col md:flex-row gap-3 items-start md:items-center justify-between shadow-sm flex-shrink-0">
               <div className="flex items-center gap-3">
                 <div className="p-2.5 bg-indigo-50 border border-indigo-100 text-indigo-600 rounded-lg">
                   <Lock size={20} />
@@ -434,6 +653,25 @@ export default function App() {
                           : "Bağlantı koptu"
                       }
                     />
+
+                    {/* Online Users Count Badges */}
+                    <div className="group relative flex items-center gap-1.5 px-2 py-0.5 bg-green-50 border border-green-100 text-green-700 text-[10px] font-semibold rounded-lg cursor-pointer">
+                      <span className="w-1.5 h-1.5 rounded-full bg-green-500 animate-pulse" />
+                      <span>{Object.keys(activeUsers).length} Çevrimiçi</span>
+                      
+                      {/* Hover dropdown */}
+                      <div className="absolute top-full left-0 mt-1 hidden group-hover:block z-50 bg-white border border-gray-100 rounded-xl shadow-lg p-2.5 w-48 text-[#1a1a1a]">
+                        <div className="font-bold text-[9px] text-gray-400 uppercase tracking-wider mb-1.5 border-b border-gray-50 pb-1">Çevrimiçi Kullanıcılar</div>
+                        <ul className="space-y-1 max-h-32 overflow-y-auto">
+                          {Object.keys(activeUsers).map((user) => (
+                            <li key={user} className="flex items-center gap-1.5 text-xs font-medium text-gray-700 truncate">
+                              <div className="w-1.5 h-1.5 rounded-full bg-green-500" />
+                              <span>{user} {user === roomConfig.username ? "(Siz)" : ""}</span>
+                            </li>
+                          ))}
+                        </ul>
+                      </div>
+                    </div>
                   </div>
                   <p className="text-xs text-gray-500 flex items-center gap-1.5 mt-0.5">
                     Rumuz: <span className="text-indigo-600 font-semibold">{roomConfig.username}</span>
@@ -473,6 +711,34 @@ export default function App() {
                   {copiedKey ? <Check size={12} className="text-green-600 ml-1" /> : <Copy size={11} className="text-gray-400 ml-1" />}
                 </button>
 
+                {/* Sound Toggle */}
+                <button
+                  type="button"
+                  onClick={() => setSoundEnabled(!soundEnabled)}
+                  className={`p-1.5 border rounded-lg transition-all cursor-pointer ${
+                    soundEnabled 
+                      ? "bg-indigo-50 border-indigo-150 text-indigo-600 hover:bg-indigo-100/70" 
+                      : "bg-gray-50 border-gray-200 text-gray-400 hover:bg-gray-100"
+                  }`}
+                  title={soundEnabled ? "Bildirim sesini kapat" : "Bildirim sesini aç"}
+                >
+                  {soundEnabled ? <Volume2 size={15} /> : <VolumeX size={15} />}
+                </button>
+
+                {/* Notifications Toggle */}
+                <button
+                  type="button"
+                  onClick={handleToggleNotifications}
+                  className={`p-1.5 border rounded-lg transition-all cursor-pointer ${
+                    notificationsEnabled 
+                      ? "bg-indigo-50 border-indigo-150 text-indigo-600 hover:bg-indigo-100/70" 
+                      : "bg-gray-50 border-gray-200 text-gray-400 hover:bg-gray-100"
+                  }`}
+                  title={notificationsEnabled ? "Masaüstü bildirimlerini kapat" : "Masaüstü bildirimlerini aç"}
+                >
+                  {notificationsEnabled ? <Bell size={15} /> : <BellOff size={15} />}
+                </button>
+
                 {/* Reset room */}
                 <button
                   onClick={handleClearHistory}
@@ -494,7 +760,11 @@ export default function App() {
             </div>
 
             {/* Chat Body messages stream */}
-            <div className="flex-1 bg-white border-x border-gray-100 p-4 overflow-y-auto space-y-4 min-h-[400px] relative">
+            <div 
+              ref={chatContainerRef}
+              onScroll={handleScroll}
+              className="flex-1 bg-white border-x border-gray-100 p-4 overflow-y-auto space-y-4 relative"
+            >
               {messages.length === 0 ? (
                 <div className="absolute inset-0 flex flex-col items-center justify-center p-6 text-center">
                   <div className="p-4 bg-indigo-50 rounded-full border border-indigo-100 mb-3 text-indigo-600">
@@ -612,10 +882,32 @@ export default function App() {
                 </div>
               )}
               <div ref={messageEndRef} />
+
+              {/* Floating scroll to bottom button */}
+              <AnimatePresence>
+                {showScrollButton && (
+                  <motion.button
+                    initial={{ opacity: 0, y: 10, scale: 0.9 }}
+                    animate={{ opacity: 1, y: 0, scale: 1 }}
+                    exit={{ opacity: 0, y: 10, scale: 0.9 }}
+                    onClick={() => scrollToBottom("smooth")}
+                    className="absolute bottom-4 right-4 z-40 px-3.5 py-2 bg-indigo-600 hover:bg-indigo-700 text-white text-xs font-bold rounded-full shadow-lg hover:shadow-indigo-600/20 transition-all flex items-center gap-1.5 cursor-pointer active:scale-95 border border-indigo-500/20"
+                  >
+                    {unreadCount > 0 ? (
+                      <span className="flex h-2 w-2 relative">
+                        <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-red-400 opacity-75"></span>
+                        <span className="relative inline-flex rounded-full h-2 w-2 bg-red-500"></span>
+                      </span>
+                    ) : null}
+                    <span>{unreadCount > 0 ? `Yeni Mesaj (${unreadCount})` : "En Alta Git"}</span>
+                    <ChevronDown size={14} />
+                  </motion.button>
+                )}
+              </AnimatePresence>
             </div>
 
             {/* Chat bottom input area */}
-            <div className="bg-white border-x border-b border-gray-100 p-4 rounded-b-2xl shadow-sm">
+            <div className="bg-white border-x border-b border-gray-100 p-4 rounded-b-2xl shadow-sm flex-shrink-0">
               <form onSubmit={handleSendMessage} className="flex gap-2">
                 <input
                   type="text"
