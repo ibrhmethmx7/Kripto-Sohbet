@@ -217,7 +217,7 @@ export default function App() {
         status,
         sender: roomConfig.username
       };
-      await fetch(`https://ntfy.sh/${roomConfig.roomId}`, {
+      await fetch(`https://ntfy.sh/${encodeURIComponent(roomConfig.roomId)}`, {
         method: "POST",
         body: JSON.stringify(payload)
       });
@@ -259,7 +259,7 @@ export default function App() {
       isHistoryLoadedRef.current = true;
     }, 3000);
 
-    const eventSource = new EventSource(`https://ntfy.sh/${roomConfig.roomId}/sse?since=all`);
+    const eventSource = new EventSource(`https://ntfy.sh/${encodeURIComponent(roomConfig.roomId)}/sse?since=all`);
 
     eventSource.onopen = () => {
       setSseStatus("connected");
@@ -485,7 +485,7 @@ export default function App() {
           type: "presence",
           username: roomConfig.username
         };
-        await fetch(`https://ntfy.sh/${roomConfig.roomId}`, {
+        await fetch(`https://ntfy.sh/${encodeURIComponent(roomConfig.roomId)}`, {
           method: "POST",
           body: JSON.stringify(payload)
         });
@@ -581,7 +581,7 @@ export default function App() {
   const sendTypingSignal = async (isTyping: boolean) => {
     if (!roomConfig) return;
     try {
-      await fetch(`https://ntfy.sh/${roomConfig.roomId}`, {
+      await fetch(`https://ntfy.sh/${encodeURIComponent(roomConfig.roomId)}`, {
         method: "POST",
         body: JSON.stringify({
           type: "typing",
@@ -614,7 +614,7 @@ export default function App() {
         emoji,
         sender: roomConfig.username
       };
-      await fetch(`https://ntfy.sh/${roomConfig.roomId}`, {
+      await fetch(`https://ntfy.sh/${encodeURIComponent(roomConfig.roomId)}`, {
         method: "POST",
         body: JSON.stringify(payload)
       });
@@ -653,17 +653,17 @@ export default function App() {
     let response;
     if (payloadStr.length > 4000) {
       // Use PUT to upload as attachment
-      response = await fetch(`https://ntfy.sh/${roomConfig.roomId}`, {
+      response = await fetch(`https://ntfy.sh/${encodeURIComponent(roomConfig.roomId)}`, {
         method: "PUT",
         headers: {
           "Filename": "message.json",
-          "X-Message": "🔒 Şifreli Medya"
+          "X-Message": "Sifreli Medya"
         },
         body: payloadStr
       });
     } else {
       // Use standard POST
-      response = await fetch(`https://ntfy.sh/${roomConfig.roomId}`, {
+      response = await fetch(`https://ntfy.sh/${encodeURIComponent(roomConfig.roomId)}`, {
         method: "POST",
         body: payloadStr
       });
@@ -927,7 +927,7 @@ export default function App() {
         type: "clear"
       };
 
-      const response = await fetch(`https://ntfy.sh/${roomConfig.roomId}`, {
+      const response = await fetch(`https://ntfy.sh/${encodeURIComponent(roomConfig.roomId)}`, {
         method: "POST",
         body: JSON.stringify(payload)
       });
