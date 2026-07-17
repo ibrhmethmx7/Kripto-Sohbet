@@ -190,14 +190,12 @@ export default function App() {
   const audioChunksRef = useRef<Blob[]>([]);
   const recordingTimerRef = useRef<any>(null);
 
-  // Check URL query parameters on mount to pre-populate room name and encryption key
+  // Check URL query parameters on mount to pre-populate room name
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
     const roomParam = params.get("room");
-    const keyParam = params.get("key");
     
     if (roomParam) setRoomInput(roomParam);
-    if (keyParam) setPasswordInput(keyParam);
     
     // Auto-generate a random username on mount
     setUsernameInput(generateRandomUsername());
@@ -858,7 +856,7 @@ export default function App() {
   // Generate safe shareable link
   const copyShareLink = () => {
     if (!roomConfig) return;
-    const url = `${window.location.origin}?room=${encodeURIComponent(roomConfig.roomId)}&key=${encodeURIComponent(roomConfig.passwordKey)}`;
+    const url = `${window.location.origin}?room=${encodeURIComponent(roomConfig.roomId)}`;
     navigator.clipboard.writeText(url);
     setCopiedLink(true);
     setTimeout(() => setCopiedLink(false), 2000);
