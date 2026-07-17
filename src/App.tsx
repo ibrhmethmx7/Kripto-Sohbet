@@ -139,7 +139,8 @@ export default function App() {
   const [passwordInput, setPasswordInput] = useState("");
   const [usernameInput, setUsernameInput] = useState("");
 
-  const [roomConfig, setRoomConfig] = useState<RoomConfig | null>(null);
+  const [roomConfig, setRoomConfig] = useState<RoomConfig & { serverUrl?: string } | null>(null);
+  const [selectedServer, setSelectedServer] = useState<string>("https://ntfy.sh");
   
   // Real-time states
   const [messages, setMessages] = useState<LocalMessage[]>([]);
@@ -194,8 +195,10 @@ export default function App() {
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
     const roomParam = params.get("room");
+    const serverParam = params.get("server");
     
     if (roomParam) setRoomInput(roomParam);
+    if (serverParam) setSelectedServer(serverParam);
     
     // Auto-generate a random username on mount
     setUsernameInput(generateRandomUsername());
@@ -217,7 +220,8 @@ export default function App() {
         status,
         sender: roomConfig.username
       };
-      await fetch(`https://ntfy.sh/kripto-sohbet-${encodeURIComponent(roomConfig.roomId)}`, {
+      const server = roomConfig.serverUrl || "https://ntfy.sh";
+      await fetch(`${server}/kripto-sohbet-${encodeURIComponent(roomConfig.roomId)}`, {
         method: "POST",
         body: JSON.stringify(payload)
       });
@@ -274,7 +278,8 @@ export default function App() {
       isHistoryLoadedRef.current = true;
     }, 3000);
 
-    const eventSource = new EventSource(`https://ntfy.sh/kripto-sohbet-${encodeURIComponent(roomConfig.roomId)}/sse?since=all`);
+    const server = roomConfig.serverUrl || "https://ntfy.sh";
+    const eventSource = new EventSource(`${server}/kripto-sohbet-${encodeURIComponent(roomConfig.roomId)}/sse?since=all`);
 
     eventSource.onopen = () => {
       setSseStatus("connected");
@@ -505,7 +510,8 @@ export default function App() {
           type: "presence",
           username: roomConfig.username
         };
-        await fetch(`https://ntfy.sh/kripto-sohbet-${encodeURIComponent(roomConfig.roomId)}`, {
+        const server = roomConfig.serverUrl || "https://ntfy.sh";
+        await fetch(`${server}/kripto-sohbet-${encodeURIComponent(roomConfig.roomId)}`, {
           method: "POST",
           body: JSON.stringify(payload)
         });
@@ -601,7 +607,8 @@ export default function App() {
   const sendTypingSignal = async (isTyping: boolean) => {
     if (!roomConfig) return;
     try {
-      await fetch(`https://ntfy.sh/kripto-sohbet-${encodeURIComponent(roomConfig.roomId)}`, {
+      const server = roomConfig.serverUrl || "https://ntfy.sh";
+      await fetch(`${server}/kripto-sohbet-${encodeURIComponent(roomConfig.roomId)}`, {
         method: "POST",
         body: JSON.stringify({
           type: "typing",
@@ -634,7 +641,8 @@ export default function App() {
         emoji,
         sender: roomConfig.username
       };
-      await fetch(`https://ntfy.sh/kripto-sohbet-${encodeURIComponent(roomConfig.roomId)}`, {
+      const server = roomConfig.serverUrl || "https://ntfy.sh";
+      await fetch(`${server}/kripto-sohbet-${encodeURIComponent(roomConfig.roomId)}`, {
         method: "POST",
         body: JSON.stringify(payload)
       });
@@ -670,10 +678,11 @@ export default function App() {
     if (!roomConfig) return;
     const payloadStr = JSON.stringify(payload);
     
+    const server = roomConfig.serverUrl || "https://ntfy.sh";
     let response;
     if (payloadStr.length > 4000) {
       // Use PUT to upload as attachment
-      response = await fetch(`https://ntfy.sh/kripto-sohbet-${encodeURIComponent(roomConfig.roomId)}`, {
+      response = await fetch(`${server}/kripto-sohbet-${encodeURIComponent(roomConfig.roomId)}`, {
         method: "PUT",
         headers: {
           "Filename": "message.json",
@@ -683,7 +692,7 @@ export default function App() {
       });
     } else {
       // Use standard POST
-      response = await fetch(`https://ntfy.sh/kripto-sohbet-${encodeURIComponent(roomConfig.roomId)}`, {
+      response = await fetch(`${server}/kripto-sohbet-${encodeURIComponent(roomConfig.roomId)}`, {
         method: "POST",
         body: payloadStr
       });
@@ -872,14 +881,16 @@ export default function App() {
     setRoomConfig({
       roomId: room,
       passwordKey: key,
-      username: username
+      username: username,
+      serverUrl: selectedServer
     });
   };
 
   // Generate safe shareable link
   const copyShareLink = () => {
     if (!roomConfig) return;
-    const url = `${window.location.origin}?room=${encodeURIComponent(roomConfig.roomId)}`;
+    const serverParam = roomConfig.serverUrl ? `&server=${encodeURIComponent(roomConfig.serverUrl)}` : "";
+    const url = `${window.location.origin}?room=${encodeURIComponent(roomConfig.roomId)}${serverParam}`;
     navigator.clipboard.writeText(url);
     setCopiedLink(true);
     setTimeout(() => setCopiedLink(false), 2000);
@@ -953,7 +964,8 @@ export default function App() {
         type: "clear"
       };
 
-      const response = await fetch(`https://ntfy.sh/kripto-sohbet-${encodeURIComponent(roomConfig.roomId)}`, {
+      const server = roomConfig.serverUrl || "https://ntfy.sh";
+      const response = await fetch(`${server}/kripto-sohbet-${encodeURIComponent(roomConfig.roomId)}`, {
         method: "POST",
         body: JSON.stringify(payload)
       });
@@ -1092,6 +1104,23 @@ export default function App() {
               </div>
 
               <form onSubmit={handleJoinRoom} className="space-y-4">
+                {/* ntfy Server Option Selection */}
+                <div className="space-y-1.5">
+                  <label className="text-xs font-semibold flex justify-between items-center">
+                    <span>ntfy Sunucusu</span>
+                    <span className="text-[9px] px-1.5 py-0.5 bg-gray-100 dark:bg-slate-800 rounded-md text-gray-400">Rate-limit aşımında değiştirin</span>
+                  </label>
+                  <select
+                    value={selectedServer}
+                    onChange={(e) => setSelectedServer(e.target.value)}
+                    className={`w-full px-3 py-2.5 rounded-lg text-sm border outline-none font-semibold ${style.inputText}`}
+                  >
+                    <option value="https://ntfy.sh">ntfy.sh (Resmi - Önerilen)</option>
+                    <option value="https://ntfy.adminforge.de">ntfy.adminforge.de (Almanya Alternatif)</option>
+                    <option value="https://ntfy.jae.fi">ntfy.jae.fi (Finlandiya Alternatif)</option>
+                  </select>
+                </div>
+
                 {/* Username Input */}
                 <div className="space-y-1.5">
                   <label className="text-xs font-semibold flex justify-between items-center">
