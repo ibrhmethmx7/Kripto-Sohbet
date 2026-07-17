@@ -805,6 +805,7 @@ export default function App() {
       iconMuted: "text-gray-400",
       btnSecondary: "bg-gray-50 hover:bg-gray-100 border border-gray-200 text-gray-700",
       loginBg: "bg-white border border-gray-100 shadow-sm",
+      divider: "border-gray-100",
     },
     "slate-dark": {
       bg: "bg-[#0f172a] text-[#f8fafc]",
@@ -821,6 +822,7 @@ export default function App() {
       iconMuted: "text-slate-500",
       btnSecondary: "bg-[#334155] hover:bg-[#475569] border border-[#475569] text-slate-200",
       loginBg: "bg-[#1e293b] border border-[#334155] shadow-lg",
+      divider: "border-[#334155]",
     },
     "cyber-neon": {
       bg: "bg-[#030712] text-[#f3f4f6] shadow-[inset_0_0_80px_rgba(79,70,229,0.05)]",
@@ -837,6 +839,7 @@ export default function App() {
       iconMuted: "text-purple-800",
       btnSecondary: "bg-[#1e1b4b] hover:bg-[#312e81] border border-[#4f46e5]/30 text-purple-200",
       loginBg: "bg-[#0b0f19] border border-[#8b5cf6]/20 shadow-[0_0_20px_rgba(139,92,246,0.15)]",
+      divider: "border-[#8b5cf6]/20",
     },
     "glassmorphism": {
       bg: "bg-gradient-to-tr from-indigo-100 via-purple-50 to-pink-100 animate-gradient text-gray-800",
@@ -853,6 +856,7 @@ export default function App() {
       iconMuted: "text-gray-400",
       btnSecondary: "bg-white/40 hover:bg-white/60 border border-white/50 text-gray-700 shadow-sm",
       loginBg: "bg-white/80 backdrop-blur-lg border border-white/40 shadow-2xl",
+      divider: "border-white/30",
     }
   };
 
@@ -1005,172 +1009,186 @@ export default function App() {
             className="flex-1 flex flex-col max-w-5xl w-full mx-auto p-3 md:p-6 z-10 overflow-hidden h-full"
           >
             {/* Upper Room Header Dashboard */}
-            <div className={`rounded-t-2xl p-4 flex flex-col md:flex-row gap-3 items-start md:items-center justify-between border-t border-x transition-all duration-300 ${style.header}`}>
-              <div className="flex items-center gap-3">
-                <div className="p-2.5 bg-indigo-50 border border-indigo-100 text-indigo-600 rounded-lg">
-                  <Lock size={20} />
-                </div>
-                <div>
-                  <div className="flex items-center gap-2">
-                    <h2 className="text-md font-bold tracking-tight font-mono">
-                      {roomConfig.roomId}
-                    </h2>
-                    <span
-                      className={`inline-block w-2.5 h-2.5 rounded-full ${
-                        sseStatus === "connected"
-                          ? "bg-green-500 shadow-[0_0_8px_rgba(34,197,94,0.6)]"
-                          : sseStatus === "connecting"
-                          ? "bg-amber-500 animate-pulse"
-                          : "bg-red-500"
-                      }`}
-                      title={
-                        sseStatus === "connected"
-                          ? "Canlı bağlantı aktif"
-                          : sseStatus === "connecting"
-                          ? "Bağlantı kuruluyor..."
-                          : "Bağlantı koptu"
-                      }
-                    />
+            <div className={`rounded-t-2xl p-4 flex flex-col gap-3.5 border-t border-x transition-all duration-300 ${style.header}`}>
+              {/* Row 1: Room ID, active users status, and Core action (Çıkış) */}
+              <div className="flex items-center justify-between w-full">
+                <div className="flex items-center gap-3">
+                  <div className="p-2.5 bg-indigo-50 border border-indigo-100 text-indigo-600 rounded-lg">
+                    <Lock size={20} />
+                  </div>
+                  <div>
+                    <div className="flex items-center gap-2">
+                      <h2 className="text-md font-bold tracking-tight font-mono">
+                        {roomConfig.roomId}
+                      </h2>
+                      <span
+                        className={`inline-block w-2.5 h-2.5 rounded-full ${
+                          sseStatus === "connected"
+                            ? "bg-green-500 shadow-[0_0_8px_rgba(34,197,94,0.6)]"
+                            : sseStatus === "connecting"
+                            ? "bg-amber-500 animate-pulse"
+                            : "bg-red-500"
+                        }`}
+                        title={
+                          sseStatus === "connected"
+                            ? "Canlı bağlantı aktif"
+                            : sseStatus === "connecting"
+                            ? "Bağlantı kuruluyor..."
+                            : "Bağlantı koptu"
+                        }
+                      />
 
-                    {/* Online Users Count Badges */}
-                    <div className="group relative flex items-center gap-1.5 px-2 py-0.5 bg-green-50 border border-green-100 text-green-700 text-[10px] font-semibold rounded-lg cursor-pointer">
-                      <span className="w-1.5 h-1.5 rounded-full bg-green-500 animate-pulse" />
-                      <span>{Object.keys(activeUsers).length} Çevrimiçi</span>
-                      
-                      {/* Hover dropdown */}
-                      <div className="absolute top-full left-0 mt-1 hidden group-hover:block z-50 bg-white border border-gray-100 rounded-xl shadow-lg p-2.5 w-48 text-[#1a1a1a]">
-                        <div className="font-bold text-[9px] text-gray-400 uppercase tracking-wider mb-1.5 border-b border-gray-50 pb-1">Çevrimiçi Kullanıcılar</div>
-                        <ul className="space-y-1 max-h-32 overflow-y-auto">
-                          {Object.keys(activeUsers).map((user) => (
-                            <li key={user} className="flex items-center gap-1.5 text-xs font-medium text-gray-700 truncate">
-                              <div className="w-1.5 h-1.5 rounded-full bg-green-500" />
-                              <span>{user} {user === roomConfig.username ? "(Siz)" : ""}</span>
-                            </li>
-                          ))}
-                        </ul>
+                      {/* Online Users Count Badges */}
+                      <div className="group relative flex items-center gap-1.5 px-2 py-0.5 bg-green-50 border border-green-100 text-green-700 text-[10px] font-semibold rounded-lg cursor-pointer">
+                        <span className="w-1.5 h-1.5 rounded-full bg-green-500 animate-pulse" />
+                        <span>{Object.keys(activeUsers).length} Çevrimiçi</span>
+                        
+                        {/* Hover dropdown */}
+                        <div className="absolute top-full left-0 mt-1 hidden group-hover:block z-50 bg-white border border-gray-100 rounded-xl shadow-lg p-2.5 w-48 text-[#1a1a1a]">
+                          <div className="font-bold text-[9px] text-gray-400 uppercase tracking-wider mb-1.5 border-b border-gray-50 pb-1">Çevrimiçi Kullanıcılar</div>
+                          <ul className="space-y-1 max-h-32 overflow-y-auto">
+                            {Object.keys(activeUsers).map((user) => (
+                              <li key={user} className="flex items-center gap-1.5 text-xs font-medium text-gray-700 truncate">
+                                <div className="w-1.5 h-1.5 rounded-full bg-green-500" />
+                                <span>{user} {user === roomConfig.username ? "(Siz)" : ""}</span>
+                              </li>
+                            ))}
+                          </ul>
+                        </div>
                       </div>
                     </div>
+                    <p className={`text-xs flex items-center gap-1.5 mt-0.5 ${style.textMuted}`}>
+                      Rumuz: <span className="text-indigo-600 font-semibold">{roomConfig.username}</span>
+                    </p>
                   </div>
-                  <p className={`text-xs flex items-center gap-1.5 mt-0.5 ${style.textMuted}`}>
-                    Rumuz: <span className="text-indigo-600 font-semibold">{roomConfig.username}</span>
-                  </p>
-                </div>
-              </div>
-
-              {/* Action utilities */}
-              <div className="flex flex-wrap items-center gap-2 w-full md:w-auto">
-                {/* Search Toggle / Input */}
-                <div className="flex items-center gap-1">
-                  {isSearching && (
-                    <input
-                      type="text"
-                      value={searchQuery}
-                      onChange={(e) => setSearchQuery(e.target.value)}
-                      placeholder="Mesajlarda ara..."
-                      className={`px-2.5 py-1.5 rounded-lg text-xs outline-none w-28 md:w-36 transition-all border ${style.inputText}`}
-                    />
-                  )}
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setIsSearching(!isSearching);
-                      if (isSearching) setSearchQuery("");
-                    }}
-                    className={`p-1.5 rounded-lg transition-all cursor-pointer border ${style.btnSecondary}`}
-                    title="Mesajlarda Ara"
-                  >
-                    <Search size={15} />
-                  </button>
                 </div>
 
-                {/* Theme Selector */}
-                <select
-                  value={currentTheme}
-                  onChange={(e: any) => setCurrentTheme(e.target.value)}
-                  className={`px-2 py-1.5 rounded-lg text-xs font-semibold cursor-pointer outline-none border transition-all ${style.btnSecondary}`}
-                  title="Arayüz temasını değiştir"
-                >
-                  <option value="slate-light">☀️ Açık Tema</option>
-                  <option value="slate-dark">🌙 Karanlık Tema</option>
-                  <option value="cyber-neon">⚡ Cyber Neon</option>
-                  <option value="glassmorphism">❄️ Cam Efekti</option>
-                </select>
-
-                {/* Share Link Button */}
-                <button
-                  onClick={copyShareLink}
-                  className={`flex-1 md:flex-initial flex items-center justify-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium transition-colors cursor-pointer border ${style.btnSecondary}`}
-                >
-                  {copiedLink ? (
-                    <>
-                      <Check size={14} className="text-green-600" />
-                      <span>Kopyalandı!</span>
-                    </>
-                  ) : (
-                    <>
-                      <Share2 size={14} />
-                      <span>Davet Linki</span>
-                    </>
-                  )}
-                </button>
-
-                {/* Show Encryption Password Tooltip/Info */}
-                <button
-                  onClick={copyPasswordKey}
-                  className={`flex-1 md:flex-initial flex items-center justify-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium transition-colors font-mono cursor-pointer border ${style.btnSecondary}`}
-                  title="Tıklayarak şifreleme anahtarını kopyalayın"
-                >
-                  <Key size={13} className="text-indigo-600" />
-                  <span>Şifre:</span>
-                  <span className="max-w-[80px] truncate">{roomConfig.passwordKey}</span>
-                  {copiedKey ? <Check size={12} className="text-green-600 ml-1" /> : <Copy size={11} className={`${style.iconMuted} ml-1`} />}
-                </button>
-
-                {/* Sound Toggle */}
-                <button
-                  type="button"
-                  onClick={() => setSoundEnabled(!soundEnabled)}
-                  className={`p-1.5 rounded-lg transition-all cursor-pointer border ${
-                    soundEnabled 
-                      ? "bg-indigo-50 border-indigo-150 text-indigo-600 hover:bg-indigo-100/70" 
-                      : style.btnSecondary
-                  }`}
-                  title={soundEnabled ? "Bildirim sesini kapat" : "Bildirim sesini aç"}
-                >
-                  {soundEnabled ? <Volume2 size={15} /> : <VolumeX size={15} />}
-                </button>
-
-                {/* Notifications Toggle */}
-                <button
-                  type="button"
-                  onClick={handleToggleNotifications}
-                  className={`p-1.5 rounded-lg transition-all cursor-pointer border ${
-                    notificationsEnabled 
-                      ? "bg-indigo-50 border-indigo-150 text-indigo-600 hover:bg-indigo-100/70" 
-                      : style.btnSecondary
-                  }`}
-                  title={notificationsEnabled ? "Masaüstü bildirimlerini kapat" : "Masaüstü bildirimlerini aç"}
-                >
-                  {notificationsEnabled ? <Bell size={15} /> : <BellOff size={15} />}
-                </button>
-
-                {/* Reset room */}
-                <button
-                  onClick={handleClearHistory}
-                  className={`p-1.5 rounded-lg transition-all cursor-pointer border ${style.btnSecondary} hover:bg-red-50 hover:text-red-600 hover:border-red-100`}
-                  title="Geçmişi Tamamen Sıfırla (Kendi Cihazlarında ve Sunucuda)"
-                >
-                  <Trash2 size={15} />
-                </button>
-
-                {/* Leave room */}
+                {/* Leave room - aligned right in Row 1 */}
                 <button
                   onClick={() => setRoomConfig(null)}
-                  className="flex items-center gap-1 px-3 py-1.5 bg-red-50 hover:bg-red-100 text-red-600 hover:text-red-700 border border-red-100 rounded-lg text-xs font-semibold transition-colors cursor-pointer"
+                  className="flex items-center gap-1.5 px-3 py-1.5 bg-red-50 hover:bg-red-100 text-red-600 hover:text-red-700 border border-red-100 rounded-lg text-xs font-semibold transition-colors cursor-pointer"
                 >
                   <LogOut size={13} />
                   <span>Çıkış</span>
                 </button>
+              </div>
+
+              {/* Sleek separator line between Row 1 and Row 2 */}
+              <div className={`h-px w-full border-t ${style.divider}`} />
+
+              {/* Row 2: Secondary action toolbar (Theme, Search, Share, Password key, and Alert controls) */}
+              <div className="flex flex-col md:flex-row md:items-center justify-between gap-3 w-full">
+                
+                {/* Left Side toolbar options: Search & Theme selection */}
+                <div className="flex flex-wrap items-center gap-2">
+                  {/* Search Toggle / Input */}
+                  <div className="flex items-center gap-1">
+                    {isSearching && (
+                      <input
+                        type="text"
+                        value={searchQuery}
+                        onChange={(e) => setSearchQuery(e.target.value)}
+                        placeholder="Mesajlarda ara..."
+                        className={`px-2.5 py-1.5 rounded-lg text-xs outline-none w-28 md:w-36 transition-all border ${style.inputText}`}
+                      />
+                    )}
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setIsSearching(!isSearching);
+                        if (isSearching) setSearchQuery("");
+                      }}
+                      className={`p-1.5 rounded-lg transition-all cursor-pointer border ${style.btnSecondary}`}
+                      title="Mesajlarda Ara"
+                    >
+                      <Search size={15} />
+                    </button>
+                  </div>
+
+                  {/* Theme Selector */}
+                  <select
+                    value={currentTheme}
+                    onChange={(e: any) => setCurrentTheme(e.target.value)}
+                    className={`px-2 py-1.5 rounded-lg text-xs font-semibold cursor-pointer outline-none border transition-all ${style.btnSecondary}`}
+                    title="Arayüz temasını değiştir"
+                  >
+                    <option value="slate-light">☀️ Açık Tema</option>
+                    <option value="slate-dark">🌙 Karanlık Tema</option>
+                    <option value="cyber-neon">⚡ Cyber Neon</option>
+                    <option value="glassmorphism">❄️ Cam Efekti</option>
+                  </select>
+                </div>
+
+                {/* Right Side toolbar options: Links, Password keys & Toggles */}
+                <div className="flex flex-wrap items-center gap-1.5">
+                  {/* Share Link Button */}
+                  <button
+                    onClick={copyShareLink}
+                    className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium transition-colors cursor-pointer border ${style.btnSecondary}`}
+                  >
+                    {copiedLink ? (
+                      <>
+                        <Check size={14} className="text-green-600" />
+                        <span>Kopyalandı!</span>
+                      </>
+                    ) : (
+                      <>
+                        <Share2 size={14} />
+                        <span>Davet Linki</span>
+                      </>
+                    )}
+                  </button>
+
+                  {/* Show Encryption Password Tooltip/Info */}
+                  <button
+                    onClick={copyPasswordKey}
+                    className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium transition-colors font-mono cursor-pointer border ${style.btnSecondary}`}
+                    title="Tıklayarak şifreleme anahtarını kopyalayın"
+                  >
+                    <Key size={13} className="text-indigo-600" />
+                    <span className="hidden sm:inline">Şifre:</span>
+                    <span className="max-w-[80px] truncate">{roomConfig.passwordKey}</span>
+                    {copiedKey ? <Check size={12} className="text-green-600 ml-1" /> : <Copy size={11} className={`${style.iconMuted} ml-1`} />}
+                  </button>
+
+                  {/* Sound Toggle */}
+                  <button
+                    type="button"
+                    onClick={() => setSoundEnabled(!soundEnabled)}
+                    className={`p-1.5 rounded-lg transition-all cursor-pointer border ${
+                      soundEnabled 
+                        ? "bg-indigo-50 border-indigo-150 text-indigo-600 hover:bg-indigo-100/70" 
+                        : style.btnSecondary
+                    }`}
+                    title={soundEnabled ? "Bildirim sesini kapat" : "Bildirim sesini aç"}
+                  >
+                    {soundEnabled ? <Volume2 size={15} /> : <VolumeX size={15} />}
+                  </button>
+
+                  {/* Notifications Toggle */}
+                  <button
+                    type="button"
+                    onClick={handleToggleNotifications}
+                    className={`p-1.5 rounded-lg transition-all cursor-pointer border ${
+                      notificationsEnabled 
+                        ? "bg-indigo-50 border-indigo-150 text-indigo-600 hover:bg-indigo-100/70" 
+                        : style.btnSecondary
+                    }`}
+                    title={notificationsEnabled ? "Masaüstü bildirimlerini kapat" : "Masaüstü bildirimlerini aç"}
+                  >
+                    {notificationsEnabled ? <Bell size={15} /> : <BellOff size={15} />}
+                  </button>
+
+                  {/* Reset room */}
+                  <button
+                    onClick={handleClearHistory}
+                    className={`p-1.5 rounded-lg transition-all cursor-pointer border ${style.btnSecondary} hover:bg-red-50 hover:text-red-600 hover:border-red-100`}
+                    title="Geçmişi Tamamen Sıfırla (Kendi Cihazlarında ve Sunucuda)"
+                  >
+                    <Trash2 size={15} />
+                  </button>
+                </div>
+
               </div>
             </div>
 
