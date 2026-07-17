@@ -25,7 +25,11 @@ import {
   Image,
   Mic,
   Square,
-  X
+  X,
+  CornerUpLeft,
+  CornerDownRight,
+  CheckCheck,
+  Folder
 } from "lucide-react";
 import { RoomConfig, EncryptedMessage } from "./types";
 import { encryptMessage, decryptMessage } from "./cryptoUtils";
@@ -93,6 +97,11 @@ interface LocalMessage extends EncryptedMessage {
   text: string;
   decrypted: boolean;
   mediaType: "text" | "image" | "audio";
+  quotedMsgId?: string;
+  quotedMsgSender?: string;
+  quotedMsgText?: string;
+  deleted?: boolean;
+  deliveryState?: "sent" | "delivered" | "read";
 }
 
 // Random generators
@@ -166,6 +175,9 @@ export default function App() {
   const [typingUsers, setTypingUsers] = useState<Record<string, number>>({});
   const [searchQuery, setSearchQuery] = useState("");
   const [isSearching, setIsSearching] = useState(false);
+  const [replyingTo, setReplyingTo] = useState<LocalMessage | null>(null);
+  const [isGalleryOpen, setIsGalleryOpen] = useState(false);
+  const sentReadReceiptsRef = useRef<Set<string>>(new Set());
 
   const [currentTheme, setCurrentTheme] = useState<"slate-light" | "slate-dark" | "cyber-neon" | "glassmorphism">(() => {
     return (localStorage.getItem("kripto-sohbet-theme") as any) || "slate-light";
@@ -190,6 +202,52 @@ export default function App() {
     // Auto-generate a random username on mount
     setUsernameInput(generateRandomUsername());
   }, []);
+
+  // Send message receipt (delivered / read checkmarks)
+  const sendReceipt = async (msgId: string, senderOfMsg: string, status: "delivered" | "read") => {
+    if (!roomConfig || senderOfMsg === roomConfig.username) return;
+    
+    // Avoid duplicate sending
+    const cacheKey = `${msgId}_${status}`;
+    if (sentReadReceiptsRef.current.has(cacheKey)) return;
+    sentReadReceiptsRef.current.add(cacheKey);
+
+    try {
+      const payload = {
+        type: "receipt",
+        msgId,
+        status,
+        sender: roomConfig.username
+      };
+      await fetch(`https://ntfy.sh/${roomConfig.roomId}`, {
+        method: "POST",
+        body: JSON.stringify(payload)
+      });
+    } catch (err) {
+      console.error("Receipt sending failed:", err);
+      sentReadReceiptsRef.current.delete(cacheKey);
+    }
+  };
+
+  // Send read receipts when window gets focus or new messages arrive
+  useEffect(() => {
+    if (!roomConfig || messages.length === 0) return;
+    
+    const handleFocus = () => {
+      messages.forEach((msg) => {
+        if (msg.sender !== roomConfig.username && msg.deliveryState !== "read") {
+          sendReceipt(msg.id, msg.sender, "read");
+        }
+      });
+    };
+    
+    window.addEventListener("focus", handleFocus);
+    if (document.hasFocus()) {
+      handleFocus();
+    }
+    
+    return () => window.removeEventListener("focus", handleFocus);
+  }, [messages, roomConfig]);
 
   // Set up EventSource for real-time room streaming via ntfy.sh
   useEffect(() => {
@@ -232,12 +290,22 @@ export default function App() {
           
           let text = plainTextRaw;
           let mediaType: "text" | "image" | "audio" = "text";
+          let quotedMsgId: string | undefined = undefined;
+          let quotedMsgSender: string | undefined = undefined;
+          let quotedMsgText: string | undefined = undefined;
           
           try {
             const parsed = JSON.parse(plainTextRaw);
-            if (parsed && typeof parsed === "object" && "mediaType" in parsed) {
-              text = parsed.text;
-              mediaType = parsed.mediaType;
+            if (parsed && typeof parsed === "object") {
+              if ("mediaType" in parsed) {
+                text = parsed.text;
+                mediaType = parsed.mediaType;
+              }
+              if ("quotedMsgId" in parsed) {
+                quotedMsgId = parsed.quotedMsgId;
+                quotedMsgSender = parsed.quotedMsgSender;
+                quotedMsgText = parsed.quotedMsgText;
+              }
             }
           } catch {
             // Keep text as plain text (backward compatibility)
@@ -251,12 +319,23 @@ export default function App() {
                 ...payload.message,
                 text,
                 mediaType,
+                quotedMsgId,
+                quotedMsgSender,
+                quotedMsgText,
                 decrypted: !plainTextRaw.startsWith("[Deşifre Edilemedi")
               }
             ];
 
-            // Auto-scroll logic if at the bottom or sent by current user
+            // Send delivered and read receipt for new real-time messages
             const isMe = payload.message.sender === roomConfig.username;
+            if (!isMe && isHistoryLoadedRef.current) {
+              sendReceipt(payload.message.id, payload.message.sender, "delivered");
+              if (document.hasFocus() && !document.hidden) {
+                sendReceipt(payload.message.id, payload.message.sender, "read");
+              }
+            }
+
+            // Auto-scroll logic if at the bottom or sent by current user
             if (isMe || isAtBottomRef.current) {
               setTimeout(() => {
                 scrollToBottom("smooth");
@@ -286,6 +365,26 @@ export default function App() {
 
             return updated.sort((a, b) => a.timestamp - b.timestamp);
           });
+        } else if (payload.type === "delete_message") {
+          setMessages((prev) =>
+            prev.map((msg) =>
+              msg.id === payload.messageId ? { ...msg, deleted: true, text: "Bu mesaj silindi" } : msg
+            )
+          );
+        } else if (payload.type === "receipt") {
+          setMessages((prev) =>
+            prev.map((msg) => {
+              if (msg.id === payload.msgId) {
+                const currentState = msg.deliveryState || "sent";
+                if (payload.status === "read") {
+                  return { ...msg, deliveryState: "read" };
+                } else if (payload.status === "delivered" && currentState !== "read") {
+                  return { ...msg, deliveryState: "delivered" };
+                }
+              }
+              return msg;
+            })
+          );
         } else if (payload.type === "presence") {
           // Track active users
           setActiveUsers((prev) => ({
@@ -526,6 +625,28 @@ export default function App() {
     }
   };
 
+  // Send delete message event (for everyone)
+  const sendDeleteMessage = async (messageId: string) => {
+    if (!roomConfig) return;
+    try {
+      // Optimistic local update
+      setMessages((prev) =>
+        prev.map((msg) =>
+          msg.id === messageId ? { ...msg, deleted: true, text: "Bu mesaj silindi" } : msg
+        )
+      );
+
+      const payload = {
+        type: "delete_message",
+        messageId,
+        sender: roomConfig.username
+      };
+      await publishPayload(payload);
+    } catch (err) {
+      console.error("Message deletion failed:", err);
+    }
+  };
+
   // Helper to publish messages via ntfy (supports auto-conversion to attachments for larger payloads)
   const publishPayload = async (payload: any) => {
     if (!roomConfig) return;
@@ -563,7 +684,10 @@ export default function App() {
     try {
       const encryptedJson = JSON.stringify({
         text: base64Data,
-        mediaType
+        mediaType,
+        quotedMsgId: replyingTo?.id || undefined,
+        quotedMsgSender: replyingTo?.sender || undefined,
+        quotedMsgText: replyingTo?.text || undefined
       });
       const { ciphertext, iv } = await encryptMessage(encryptedJson, roomConfig.passwordKey);
       const messageObj = {
@@ -578,6 +702,7 @@ export default function App() {
         message: messageObj
       };
       await publishPayload(payload);
+      setReplyingTo(null);
     } catch (err) {
       console.error("Media message sending failed:", err);
       setErrorText("Medya gönderilemedi. Lütfen tekrar deneyin.");
@@ -763,7 +888,10 @@ export default function App() {
       // Encrypt completely on the client side inside a JSON metadata envelope
       const encryptedJson = JSON.stringify({
         text: textToSend,
-        mediaType: "text"
+        mediaType: "text",
+        quotedMsgId: replyingTo?.id || undefined,
+        quotedMsgSender: replyingTo?.sender || undefined,
+        quotedMsgText: replyingTo?.text || undefined
       });
       const { ciphertext, iv } = await encryptMessage(encryptedJson, roomConfig.passwordKey);
 
@@ -781,6 +909,7 @@ export default function App() {
       };
 
       await publishPayload(payload);
+      setReplyingTo(null);
     } catch (err: any) {
       console.error("Mesaj gönderme hatası:", err);
       setErrorText("Mesaj gönderilemedi. Lütfen bağlantınızı kontrol edin.");
@@ -1209,6 +1338,20 @@ export default function App() {
                     {notificationsEnabled ? <Bell size={15} /> : <BellOff size={15} />}
                   </button>
 
+                  {/* Shared Media Gallery Drawer Button */}
+                  <button
+                    type="button"
+                    onClick={() => setIsGalleryOpen(!isGalleryOpen)}
+                    className={`p-1.5 rounded-lg transition-all cursor-pointer border ${
+                      isGalleryOpen 
+                        ? "bg-indigo-50 border-indigo-150 text-indigo-600 hover:bg-indigo-100/70" 
+                        : style.btnSecondary
+                    }`}
+                    title="Paylaşılan Medya Galerisi"
+                  >
+                    <Folder size={15} />
+                  </button>
+
                   {/* Reset room */}
                   <button
                     onClick={handleClearHistory}
@@ -1222,318 +1365,459 @@ export default function App() {
               </div>
             </div>
 
-            {/* Chat Body messages stream */}
-            <div 
-              ref={chatContainerRef}
-              onScroll={handleScroll}
-              className={`flex-1 p-4 overflow-y-auto space-y-4 relative border-x ${style.body}`}
-            >
-              {displayedMessages.length === 0 ? (
-                <div className="absolute inset-0 flex flex-col items-center justify-center p-6 text-center">
-                  <div className="p-4 bg-indigo-50 rounded-full border border-indigo-100 mb-3 text-indigo-600">
-                    <Unlock size={32} />
-                  </div>
-                  <h3 className="text-sm font-semibold">
-                    {searchQuery.trim() ? "Arama Sonucu Bulunamadı" : "Kripto Sohbet Odası Hazır"}
-                  </h3>
-                  <p className={`text-xs mt-1 max-w-sm leading-relaxed ${style.textMuted}`}>
-                    {searchQuery.trim() 
-                      ? "Aradığınız kelimeye uygun deşifre edilmiş mesaj bulunamadı."
-                      : "Arkadaşınızla paylaştığınız davet linki ve ortak şifre ile buraya bağlanabilirsiniz. Gönderilen tüm mesajlar uçtan uca şifrelenir."
-                    }
-                  </p>
-                  
-                  {!searchQuery.trim() && (
-                    <button
-                      onClick={copyShareLink}
-                      className="mt-4 inline-flex items-center gap-1.5 px-4 py-2 bg-indigo-600 hover:bg-indigo-700 text-white text-xs font-bold rounded-lg shadow-sm transition-colors cursor-pointer"
-                    >
-                      <Share2 size={13} /> Davet Linkini Kopyala
-                    </button>
-                  )}
-                </div>
-              ) : (
-                <div className="flex flex-col gap-3">
-                  {displayedMessages.map((msg) => {
-                    const isMe = msg.sender === roomConfig.username;
-                    const msgReactions = reactions[msg.id] || [];
-                    
-                    return (
-                      <motion.div
-                        key={msg.id}
-                        initial={{ opacity: 0, y: 10 }}
-                        animate={{ opacity: 1, y: 0 }}
-                        className={`flex flex-col max-w-[85%] ${isMe ? "self-end items-end" : "self-start items-start"}`}
-                        onMouseEnter={() => setHoveredMessageId(msg.id)}
-                        onMouseLeave={() => setHoveredMessageId(null)}
-                      >
-                        {/* Username tag */}
-                        <span className={`text-[11px] font-semibold mb-1 ml-1 px-1 ${style.textMuted}`}>
-                          {isMe ? "Siz" : msg.sender}
-                        </span>
-
-                        {/* Message box wrapper */}
-                        <div className="relative group">
-                          
-                          {/* Emoji reaction bar on hover */}
-                          {hoveredMessageId === msg.id && msg.decrypted && (
-                            <div className={`absolute -top-8 z-30 flex items-center gap-1 bg-white border border-gray-150 p-1 rounded-full shadow-md ${
-                              isMe ? "right-2" : "left-2"
-                            }`}>
-                              {["👍", "❤️", "😂", "😮", "😢"].map((emoji) => (
-                                <button
-                                  key={emoji}
-                                  type="button"
-                                  onClick={() => sendReaction(msg.id, emoji)}
-                                  className="hover:scale-130 transition-all text-xs px-1.5 py-0.5 cursor-pointer hover:bg-gray-150/40 rounded-full"
-                                >
-                                  {emoji}
-                                </button>
-                              ))}
-                            </div>
-                          )}
-
-                          {/* Message bubble */}
-                          <div
-                            className={`p-3 rounded-2xl shadow-sm border transition-all duration-300 ${
-                              isMe ? style.messageMe : style.messageOther
-                            } ${
-                              isMe ? "rounded-tr-none" : "rounded-tl-none"
-                            }`}
+            {/* Main content flex container wrapping Messages stream, Input area, and Gallery drawer */}
+            <div className={`flex-1 flex flex-col md:flex-row overflow-hidden border-x border-b rounded-b-2xl transition-all duration-300 ${
+              currentTheme === "slate-light" ? "border-gray-100" :
+              currentTheme === "slate-dark" ? "border-[#334155]" :
+              currentTheme === "cyber-neon" ? "border-[#8b5cf6]/20" : "border-white/30"
+            }`}>
+              
+              {/* Left Column: Messages stream & Input area */}
+              <div className="flex-1 flex flex-col overflow-hidden">
+                
+                {/* Chat Body messages stream */}
+                <div 
+                  ref={chatContainerRef}
+                  onScroll={handleScroll}
+                  className={`flex-1 p-4 overflow-y-auto space-y-4 relative ${style.body}`}
+                >
+                  {displayedMessages.length === 0 ? (
+                    <div className="absolute inset-0 flex flex-col items-center justify-center p-6 text-center">
+                      <div className="p-4 bg-indigo-50 rounded-full border border-indigo-100 mb-3 text-indigo-600">
+                        <Unlock size={32} />
+                      </div>
+                      <h3 className="text-sm font-semibold">
+                        {searchQuery.trim() ? "Arama Sonucu Bulunamadı" : "Kripto Sohbet Odası Hazır"}
+                      </h3>
+                      <p className={`text-xs mt-1 max-w-sm leading-relaxed ${style.textMuted}`}>
+                        {searchQuery.trim() 
+                          ? "Aradığınız kelimeye uygun deşifre edilmiş mesaj bulunamadı."
+                          : "Arkadaşınızla paylaştığınız davet linki ve ortak şifre ile buraya bağlanabilirsiniz. Gönderilen tüm mesajlar uçtan uca şifrelenir."
+                        }
+                      </p>
+                      
+                      {!searchQuery.trim() && (
+                        <button
+                          onClick={copyShareLink}
+                          className="mt-4 inline-flex items-center gap-1.5 px-4 py-2 bg-indigo-600 hover:bg-indigo-700 text-white text-xs font-bold rounded-lg shadow-sm transition-colors cursor-pointer"
+                        >
+                          <Share2 size={13} /> Davet Linkini Kopyala
+                        </button>
+                      )}
+                    </div>
+                  ) : (
+                    <div className="flex flex-col gap-3">
+                      {displayedMessages.map((msg) => {
+                        const isMe = msg.sender === roomConfig.username;
+                        const msgReactions = reactions[msg.id] || [];
+                        
+                        return (
+                          <motion.div
+                            key={msg.id}
+                            initial={{ opacity: 0, y: 10 }}
+                            animate={{ opacity: 1, y: 0 }}
+                            className={`flex flex-col max-w-[85%] ${isMe ? "self-end items-end" : "self-start items-start"}`}
+                            onMouseEnter={() => setHoveredMessageId(msg.id)}
+                            onMouseLeave={() => setHoveredMessageId(null)}
                           >
-                            {/* Rendering based on E2EE Media Type */}
-                            {msg.decrypted && msg.mediaType === "image" ? (
-                              <div className="max-w-xs overflow-hidden rounded-lg mt-1 mb-1 border border-black/10">
-                                <img 
-                                  src={msg.text} 
-                                  alt="Paylaşılan Resim" 
-                                  className="w-full object-cover max-h-60 hover:opacity-90 transition-opacity cursor-zoom-in" 
-                                  onClick={() => window.open(msg.text, "_blank")}
-                                />
-                              </div>
-                            ) : msg.decrypted && msg.mediaType === "audio" ? (
-                              <div className="mt-1 mb-1 min-w-[210px] flex items-center gap-2 text-xs">
-                                <audio src={msg.text} controls className="w-full h-9 rounded-lg opacity-90" />
-                              </div>
-                            ) : (
-                              <p className="text-sm leading-relaxed break-words font-sans whitespace-pre-wrap font-medium">
-                                {msg.text}
-                              </p>
-                            )}
+                            {/* Username tag */}
+                            <span className={`text-[11px] font-semibold mb-1 ml-1 px-1 ${style.textMuted}`}>
+                              {isMe ? "Siz" : msg.sender}
+                            </span>
 
-                            {/* Info Pill & Timestamp footer */}
-                            <div className={`flex items-center justify-between gap-3 mt-1.5 text-[10px] ${
-                              isMe ? "text-indigo-100" : style.textMuted
-                            }`}>
-                              <span>{formatTime(msg.timestamp)}</span>
+                            {/* Message box wrapper */}
+                            <div className="relative group">
                               
-                              {/* Toggle Meta details */}
-                              <button
-                                onClick={() => setVisibleMetaMsgId(visibleMetaMsgId === msg.id ? null : msg.id)}
-                                className={`inline-flex items-center gap-0.5 hover:underline font-mono text-[9px] cursor-pointer ${
-                                  isMe ? "text-indigo-200" : "text-gray-500 hover:text-indigo-600"
+                              {/* Hover reaction & action toolbar */}
+                              {hoveredMessageId === msg.id && !msg.deleted && (
+                                <div className={`absolute -top-8 z-30 flex items-center gap-1 bg-white dark:bg-[#1e293b] border border-gray-200 dark:border-[#334155] p-1.5 rounded-full shadow-md ${
+                                  isMe ? "right-2" : "left-2"
+                                } text-[#1a1a1a] dark:text-[#f8fafc]`}>
+                                  {["👍", "❤️", "😂", "😮", "😢"].map((emoji) => (
+                                    <button
+                                      key={emoji}
+                                      type="button"
+                                      onClick={() => sendReaction(msg.id, emoji)}
+                                      className="hover:scale-130 transition-all text-xs px-1.5 py-0.5 cursor-pointer hover:bg-gray-150/40 rounded-full"
+                                    >
+                                      {emoji}
+                                    </button>
+                                  ))}
+                                  
+                                  <div className="w-px h-3.5 bg-gray-200 dark:bg-gray-700 mx-1" />
+
+                                  <button
+                                    type="button"
+                                    onClick={() => setReplyingTo(msg)}
+                                    className={`hover:scale-115 transition-all p-1 cursor-pointer ${
+                                      currentTheme === "slate-light" ? "text-gray-500 hover:text-indigo-650" : "text-slate-400 hover:text-indigo-400"
+                                    }`}
+                                    title="Yanıtla"
+                                  >
+                                    <CornerUpLeft size={13} />
+                                  </button>
+
+                                  {isMe && (
+                                    <button
+                                      type="button"
+                                      onClick={() => {
+                                        if (confirm("Bu mesajı herkes için silmek istediğinize emin misiniz?")) {
+                                          sendDeleteMessage(msg.id);
+                                        }
+                                      }}
+                                      className={`hover:scale-115 transition-all p-1 cursor-pointer ${
+                                        currentTheme === "slate-light" ? "text-gray-500 hover:text-red-650" : "text-slate-400 hover:text-red-400"
+                                      }`}
+                                      title="Herkes için Sil"
+                                    >
+                                      <Trash2 size={13} />
+                                    </button>
+                                  )}
+                                </div>
+                              )}
+
+                              {/* Message bubble */}
+                              <div
+                                id={`msg-bubble-${msg.id}`}
+                                className={`p-3 rounded-2xl shadow-sm border transition-all duration-300 relative ${
+                                  isMe ? style.messageMe : style.messageOther
+                                } ${
+                                  isMe ? "rounded-tr-none" : "rounded-tl-none"
                                 }`}
-                                title="Şifreli veriyi ve IV parametrelerini gör"
                               >
-                                <Lock size={9} />
-                                <span>{visibleMetaMsgId === msg.id ? "Gizle" : "Kripto Detay"}</span>
-                              </button>
-                            </div>
-                          </div>
-
-                          {/* Render Reactions list */}
-                          {msgReactions.length > 0 && (
-                            <div className={`flex flex-wrap gap-1 mt-1 ${isMe ? "justify-end" : "justify-start"}`}>
-                              <div className="flex items-center gap-1 bg-white/70 backdrop-blur-sm border border-gray-150 rounded-full px-2 py-0.5 shadow-sm text-[10px] text-gray-700">
-                                {Array.from(new Set(msgReactions.map(r => r.emoji))).map((emoji) => (
-                                  <span key={emoji} title={msgReactions.filter(r => r.emoji === emoji).map(r => r.sender).join(", ")}>{emoji}</span>
-                                ))}
-                                <span className="text-gray-400 font-semibold text-[9px] ml-0.5">{msgReactions.length}</span>
-                              </div>
-                            </div>
-                          )}
-                        </div>
-
-                        {/* Interactive Crypto Details Container (Cyber-security terminal visualizer) */}
-                        <AnimatePresence>
-                          {visibleMetaMsgId === msg.id && (
-                            <motion.div
-                              initial={{ opacity: 0, height: 0 }}
-                              animate={{ opacity: 1, height: "auto" }}
-                              exit={{ opacity: 0, height: 0 }}
-                              className="w-full mt-2 overflow-hidden text-left"
-                            >
-                              <div className="p-3 bg-gray-50/50 border border-indigo-100 rounded-xl text-[10px] font-mono text-gray-600 space-y-2 max-w-full overflow-x-auto shadow-sm leading-relaxed">
-                                <div className="flex justify-between items-center border-b border-indigo-100/30 pb-1">
-                                  <span className="font-bold uppercase text-indigo-700">🔒 UÇTAN UCA ŞİFRELİ PARAMETRELER</span>
-                                  <span className="text-[9px] px-1 bg-indigo-50 text-indigo-700 rounded font-bold">AES-GCM-256</span>
-                                </div>
-                                <div className="space-y-1">
-                                  <div>
-                                    <span className="text-indigo-600 font-semibold">Gönderen:</span> {msg.sender}
-                                  </div>
-                                  <div>
-                                    <span className="text-indigo-600 font-semibold">Zaman Damgası:</span> {msg.timestamp}
-                                  </div>
-                                  <div className="break-all whitespace-pre-wrap">
-                                    <span className="text-indigo-600 font-semibold">GCM Başlatma Vektörü (IV):</span>
-                                    <div className="mt-0.5 p-1 bg-white rounded border border-gray-100 text-[9px] text-gray-700 select-all">
-                                      {msg.iv}
+                                {/* Quoted Message preview inside bubble */}
+                                {!msg.deleted && msg.quotedMsgId && (
+                                  <div 
+                                    onClick={() => {
+                                      const target = document.getElementById(`msg-bubble-${msg.quotedMsgId}`);
+                                      if (target) {
+                                        target.scrollIntoView({ behavior: "smooth", block: "center" });
+                                        target.classList.add("ring-2", "ring-indigo-500", "scale-[1.02]");
+                                        setTimeout(() => {
+                                          target.classList.remove("ring-2", "ring-indigo-500", "scale-[1.02]");
+                                        }, 1000);
+                                      }
+                                    }}
+                                    className={`mb-2 p-2 rounded-lg text-xs border-l-2 text-left cursor-pointer transition-all ${
+                                      isMe 
+                                        ? "bg-indigo-700/40 border-indigo-200 text-indigo-100 hover:bg-indigo-700/60" 
+                                        : "bg-gray-100 border-indigo-50 text-gray-700 hover:bg-gray-200 dark:bg-slate-800/80 dark:border-indigo-400 dark:text-gray-300 dark:hover:bg-slate-800"
+                                    }`}
+                                  >
+                                    <div className="font-bold mb-0.5 text-[9px] flex items-center gap-1">
+                                      <CornerDownRight size={10} className="opacity-70" />
+                                      <span>{msg.quotedMsgSender}</span>
+                                    </div>
+                                    <div className="truncate max-w-[200px]">
+                                      {msg.quotedMsgText}
                                     </div>
                                   </div>
-                                  <div className="break-all whitespace-pre-wrap">
-                                    <span className="text-indigo-600 font-semibold">Base64 Şifreli Gövde (Ciphertext):</span>
-                                    <div className="mt-0.5 p-1 bg-white rounded border border-gray-100 text-[9px] text-gray-700 select-all">
-                                      {msg.ciphertext}
-                                    </div>
+                                )}
+
+                                {/* Rendering based on E2EE Media Type */}
+                                {msg.deleted ? (
+                                  <p className="text-sm italic leading-relaxed break-words font-sans text-indigo-205 dark:text-slate-400 flex items-center gap-1.5">
+                                    <Trash2 size={12} className="opacity-60" />
+                                    <span>Bu mesaj silindi</span>
+                                  </p>
+                                ) : msg.decrypted && msg.mediaType === "image" ? (
+                                  <div className="max-w-xs overflow-hidden rounded-lg mt-1 mb-1 border border-black/10">
+                                    <img 
+                                      src={msg.text} 
+                                      alt="Paylaşılan Resim" 
+                                      className="w-full object-cover max-h-60 hover:opacity-90 transition-opacity cursor-zoom-in" 
+                                      onClick={() => window.open(msg.text, "_blank")}
+                                    />
                                   </div>
-                                  <div className="text-[9px] text-indigo-600/70 border-t border-indigo-100/30 pt-1 flex items-center gap-1.5">
-                                    <Shield size={10} />
-                                    <span>Bütünlük Doğrulandı (GCM Etiketi Geçerli)</span>
+                                ) : msg.decrypted && msg.mediaType === "audio" ? (
+                                  <div className="mt-1 mb-1 min-w-[210px] flex items-center gap-2 text-xs">
+                                    <audio src={msg.text} controls className="w-full h-9 rounded-lg opacity-90" />
                                   </div>
+                                ) : (
+                                  <p className="text-sm leading-relaxed break-words font-sans whitespace-pre-wrap font-medium">
+                                    {msg.text}
+                                  </p>
+                                )}
+
+                                {/* Info Pill & Timestamp footer */}
+                                <div className={`flex items-center justify-between gap-3 mt-1.5 text-[10px] ${
+                                  isMe ? "text-indigo-100" : style.textMuted
+                                }`}>
+                                  <div className="flex items-center gap-1">
+                                    <span>{formatTime(msg.timestamp)}</span>
+                                    {isMe && !msg.deleted && (
+                                      <span className="inline-flex" title={
+                                        msg.deliveryState === "read" 
+                                          ? "Okundu" 
+                                          : msg.deliveryState === "delivered" 
+                                          ? "İletildi" 
+                                          : "Gönderildi"
+                                      }>
+                                        {msg.deliveryState === "read" ? (
+                                          <CheckCheck size={12} className="text-cyan-300 font-bold" />
+                                        ) : msg.deliveryState === "delivered" ? (
+                                          <CheckCheck size={12} className="text-indigo-200" />
+                                        ) : (
+                                          <Check size={12} className="text-indigo-200" />
+                                        )}
+                                      </span>
+                                    )}
+                                  </div>
+                                  
+                                  {/* Toggle Meta details */}
+                                  <button
+                                    onClick={() => setVisibleMetaMsgId(visibleMetaMsgId === msg.id ? null : msg.id)}
+                                    className={`inline-flex items-center gap-0.5 hover:underline font-mono text-[9px] cursor-pointer ${
+                                      isMe ? "text-indigo-200" : "text-gray-500 hover:text-indigo-650"
+                                    }`}
+                                    title="Şifreli veriyi ve IV parametrelerini gör"
+                                  >
+                                    <Lock size={9} />
+                                    <span>{visibleMetaMsgId === msg.id ? "Gizle" : "Kripto Detay"}</span>
+                                  </button>
                                 </div>
                               </div>
-                            </motion.div>
-                          )}
-                        </AnimatePresence>
-                      </motion.div>
-                    );
-                  })}
+
+                              {/* Emoji Reactions list under bubble */}
+                              {msgReactions.length > 0 && (
+                                <div className={`absolute -bottom-2 z-10 flex items-center gap-1 px-1.5 py-0.5 rounded-full border shadow-sm text-[10px] ${
+                                  isMe 
+                                    ? "right-2 bg-indigo-50 border-indigo-100 text-indigo-800" 
+                                    : "left-2 bg-gray-50 border-gray-150 text-gray-800 dark:bg-slate-800 dark:border-slate-700 dark:text-slate-200"
+                                }`}>
+                                  <span>{msgReactions.map(r => r.emoji).join("")}</span>
+                                  <span className="font-semibold opacity-70">{msgReactions.length}</span>
+                                </div>
+                              )}
+                            </div>
+
+                            {/* Interactive GCM Security Metadata Panel */}
+                            <AnimatePresence>
+                              {visibleMetaMsgId === msg.id && (
+                                <motion.div
+                                  initial={{ opacity: 0, height: 0 }}
+                                  animate={{ opacity: 1, height: "auto" }}
+                                  exit={{ opacity: 0, height: 0 }}
+                                  className="w-full mt-2 overflow-hidden text-left"
+                                >
+                                  <div className="p-3 bg-[#0f172a] border border-[#334155]/30 rounded-xl text-[10px] font-mono text-slate-400 space-y-2 max-w-full overflow-x-auto shadow-inner leading-relaxed">
+                                    <div className="flex justify-between items-center border-b border-[#334155]/20 pb-1">
+                                      <span className="font-bold text-indigo-400">🔒 UÇTAN UCA ŞİFRELİ PARAMETRELER</span>
+                                      <span className="text-[9px] px-1 bg-indigo-500/10 rounded text-indigo-400">AES-GCM-256</span>
+                                    </div>
+                                    <div className="space-y-1">
+                                      <div><span className="text-indigo-400 font-semibold">Gönderen:</span> {msg.sender}</div>
+                                      <div><span className="text-indigo-400 font-semibold">Zaman Damgası:</span> {msg.timestamp}</div>
+                                      <div className="break-all whitespace-pre-wrap">
+                                        <span className="text-indigo-400 font-semibold">GCM Başlatma Vektörü (IV):</span>
+                                        <div className="mt-0.5 p-1 bg-[#090d16] rounded border border-gray-800 text-[9px] text-slate-400 select-all">{msg.iv}</div>
+                                      </div>
+                                      <div className="break-all whitespace-pre-wrap">
+                                        <span className="text-indigo-400 font-semibold">Base64 Şifreli Gövde (Ciphertext):</span>
+                                        <div className="mt-0.5 p-1 bg-[#090d16] rounded border border-gray-800 text-[9px] text-slate-400 select-all">{msg.ciphertext}</div>
+                                      </div>
+                                      <div className="text-[9px] text-green-500/80 border-t border-green-500/10 pt-1 flex items-center gap-1.5">
+                                        <Shield size={10} />
+                                        <span>Bütünlük Doğrulandı (GCM Etiketi Geçerli)</span>
+                                      </div>
+                                    </div>
+                                  </div>
+                                </motion.div>
+                              )}
+                            </AnimatePresence>
+                          </motion.div>
+                        );
+                      })}
+                    </div>
+                  )}
+                  <div ref={messageEndRef} />
                 </div>
-              )}
-              <div ref={messageEndRef} />
 
-              {/* Floating scroll to bottom button */}
+                {/* Chat bottom input area */}
+                <div className={`p-4 border-t transition-all duration-300 ${style.input}`}>
+                  {/* Quoted Message Preview inside input box */}
+                  {replyingTo && (
+                    <div className={`mb-3 p-2.5 rounded-xl flex items-center justify-between text-xs border border-dashed ${
+                      currentTheme === "slate-light" ? "bg-gray-50 border-gray-200" : "bg-[#0f172a] border-[#334155]"
+                    }`}>
+                      <div className="flex items-center gap-2 border-l-3 border-indigo-500 pl-2 overflow-hidden">
+                        <div className="flex flex-col text-left">
+                          <span className="font-bold text-indigo-600 dark:text-indigo-400 text-[10px]">
+                            {replyingTo.sender === roomConfig?.username ? "Kendiniz" : replyingTo.sender} adlı kullanıcıya yanıt veriliyor
+                          </span>
+                          <span className={`truncate ${style.textMuted} max-w-[200px] sm:max-w-md`}>
+                            {replyingTo.text}
+                          </span>
+                        </div>
+                      </div>
+                      <button
+                        type="button"
+                        onClick={() => setReplyingTo(null)}
+                        className={`p-1 rounded-full transition-all cursor-pointer border ${style.btnSecondary}`}
+                      >
+                        <X size={12} />
+                      </button>
+                    </div>
+                  )}
+
+                  <form onSubmit={handleSendMessage} className="flex gap-2">
+                    {/* Media action upload trigger */}
+                    {!isRecording && (
+                      <label className={`p-3 border rounded-xl flex items-center justify-center transition-all cursor-pointer ${style.btnSecondary}`} title="Resim Gönder">
+                        <Image size={16} />
+                        <input
+                          type="file"
+                          accept="image/*"
+                          onChange={handleImageSelect}
+                          className="hidden"
+                        />
+                      </label>
+                    )}
+
+                    {/* Microphone trigger to send E2EE voice notes */}
+                    {!isRecording && (
+                      <button
+                        type="button"
+                        onClick={startRecording}
+                        className={`p-3 border rounded-xl flex items-center justify-center transition-all cursor-pointer ${style.btnSecondary}`}
+                        title="Ses Kaydet"
+                      >
+                        <Mic size={16} />
+                      </button>
+                    )}
+
+                    {/* Voice message recording status */}
+                    {isRecording && (
+                      <div className="flex-1 flex items-center justify-between px-4 py-2 bg-red-50 border border-red-200 rounded-xl text-red-650 text-xs font-bold">
+                        <div className="flex items-center gap-2">
+                          <span className="w-2 h-2 rounded-full bg-red-600 animate-ping" />
+                          <span>Ses Kaydediliyor ({recordingDuration}s / 20s)</span>
+                        </div>
+                        <div className="flex items-center gap-1.5">
+                          <button
+                            type="button"
+                            onClick={stopRecording}
+                            className="px-2 py-1 bg-red-600 text-white rounded-lg hover:bg-red-700 flex items-center gap-1 cursor-pointer transition-colors text-[10px]"
+                            title="Kaydı Gönder"
+                          >
+                            <Square size={10} />
+                            <span>Bitir</span>
+                          </button>
+                          <button
+                            type="button"
+                            onClick={cancelRecording}
+                            className="px-2 py-1 bg-gray-200 text-gray-700 rounded-lg hover:bg-gray-300 flex items-center gap-1 cursor-pointer transition-colors text-[10px]"
+                            title="Vazgeç"
+                          >
+                            <X size={10} />
+                            <span>İptal</span>
+                          </button>
+                        </div>
+                      </div>
+                    )}
+
+                    {/* Text input, hidden while recording */}
+                    {!isRecording && (
+                      <input
+                        type="text"
+                        value={inputText}
+                        onChange={(e) => handleInputChange(e.target.value)}
+                        placeholder="Güvenli, şifreli mesajınızı yazın..."
+                        className={`flex-1 rounded-xl px-4 py-3 text-sm outline-none transition-all border ${style.inputText}`}
+                        disabled={sseStatus !== "connected"}
+                      />
+                    )}
+
+                    <button
+                      type="submit"
+                      disabled={(!inputText.trim() && !isRecording) || sseStatus !== "connected" || isSending}
+                      className="px-5 py-3 bg-indigo-600 hover:bg-indigo-700 disabled:bg-gray-150 disabled:text-gray-400 text-white font-bold rounded-xl flex items-center justify-center transition-all cursor-pointer disabled:cursor-not-allowed shadow-sm hover:shadow-indigo-600/10 active:scale-95 flex-shrink-0"
+                      title="Mesajı şifrele ve gönder"
+                    >
+                      <Send size={16} className={isSending ? "animate-pulse" : ""} />
+                    </button>
+                  </form>
+
+                  {/* Status Alert or Error Banner */}
+                  {errorText && (
+                    <p className="text-red-500 text-xs mt-2 text-center font-medium">
+                      {errorText}
+                    </p>
+                  )}
+                  
+                  <div className={`mt-2.5 flex items-center justify-between text-[11px] ${style.textMuted}`}>
+                    <div className="flex items-center gap-1.5">
+                      <Shield size={12} className="text-indigo-500/70" />
+                      <span>Şifreleme modu: <span className="text-indigo-600 font-semibold font-mono">CLIENT AES-GCM (256-bit)</span></span>
+                    </div>
+                    <span>Mesajlar sunucuya asla düz metin olarak gitmez.</span>
+                  </div>
+                </div>
+              </div>
+
+              {/* Shared Media Gallery Drawer Column */}
               <AnimatePresence>
-                {showScrollButton && (
-                  <motion.button
-                    initial={{ opacity: 0, y: 10, scale: 0.9 }}
-                    animate={{ opacity: 1, y: 0, scale: 1 }}
-                    exit={{ opacity: 0, y: 10, scale: 0.9 }}
-                    onClick={() => scrollToBottom("smooth")}
-                    className="absolute bottom-4 right-4 z-40 px-3.5 py-2 bg-indigo-600 hover:bg-indigo-700 text-white text-xs font-bold rounded-full shadow-lg hover:shadow-indigo-600/20 transition-all flex items-center gap-1.5 cursor-pointer active:scale-95 border border-indigo-500/20"
+                {isGalleryOpen && (
+                  <motion.div
+                    initial={{ opacity: 0, x: 50 }}
+                    animate={{ opacity: 1, x: 0 }}
+                    exit={{ opacity: 0, x: 50 }}
+                    className={`w-full md:w-80 border-t md:border-t-0 md:border-l p-4 flex flex-col transition-all duration-300 md:h-full overflow-hidden ${style.card} rounded-b-2xl md:rounded-b-none`}
                   >
-                    {unreadCount > 0 ? (
-                      <span className="flex h-2 w-2 relative">
-                        <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-red-400 opacity-75"></span>
-                        <span className="relative inline-flex rounded-full h-2 w-2 bg-red-500"></span>
-                      </span>
-                    ) : null}
-                    <span>{unreadCount > 0 ? `Yeni Mesaj (${unreadCount})` : "En Alta Git"}</span>
-                    <ChevronDown size={14} />
-                  </motion.button>
+                    <div className="flex items-center justify-between pb-3 border-b mb-3">
+                      <h3 className="text-sm font-bold flex items-center gap-2">
+                        <Folder size={16} className="text-indigo-650" />
+                        <span>Paylaşılan Medya</span>
+                      </h3>
+                      <button
+                        onClick={() => setIsGalleryOpen(false)}
+                        className={`p-1 rounded-full transition-all cursor-pointer border ${style.btnSecondary}`}
+                      >
+                        <X size={12} />
+                      </button>
+                    </div>
+
+                    {/* List shared media items */}
+                    <div className="flex-1 overflow-y-auto space-y-4 pr-1">
+                      {/* Images Section */}
+                      <div>
+                        <h4 className={`text-[10px] uppercase font-bold tracking-wider mb-2 ${style.textMuted}`}>Görseller</h4>
+                        {messages.filter(m => m.decrypted && m.mediaType === "image" && !m.deleted).length === 0 ? (
+                          <p className={`text-xs italic ${style.textMuted}`}>Henüz görsel paylaşılmadı.</p>
+                        ) : (
+                          <div className="grid grid-cols-3 gap-2">
+                            {messages.filter(m => m.decrypted && m.mediaType === "image" && !m.deleted).map((msg) => (
+                              <div key={msg.id} className="relative aspect-square rounded-lg overflow-hidden border border-black/10 group cursor-pointer" onClick={() => window.open(msg.text, "_blank")}>
+                                <img src={msg.text} className="w-full h-full object-cover group-hover:scale-110 transition-transform duration-300" alt="Medya" />
+                              </div>
+                            ))}
+                          </div>
+                        )}
+                      </div>
+
+                      {/* Divider */}
+                      <div className="h-px bg-gray-100 dark:bg-gray-700/50 w-full" />
+
+                      {/* Audio Section */}
+                      <div>
+                        <h4 className={`text-[10px] uppercase font-bold tracking-wider mb-2 ${style.textMuted}`}>Ses Kayıtları</h4>
+                        {messages.filter(m => m.decrypted && m.mediaType === "audio" && !m.deleted).length === 0 ? (
+                          <p className={`text-xs italic ${style.textMuted}`}>Henüz sesli mesaj paylaşılmadı.</p>
+                        ) : (
+                          <div className="space-y-2">
+                            {messages.filter(m => m.decrypted && m.mediaType === "audio" && !m.deleted).map((msg) => (
+                              <div key={msg.id} className={`p-2 rounded-lg border text-xs flex flex-col gap-1 ${style.messageOther}`}>
+                                <span className={`text-[9px] font-semibold ${style.textMuted}`}>{msg.sender} - {formatTime(msg.timestamp)}</span>
+                                <audio src={msg.text} controls className="w-full h-7 opacity-90" />
+                              </div>
+                            ))}
+                          </div>
+                        )}
+                      </div>
+                    </div>
+                  </motion.div>
                 )}
               </AnimatePresence>
-            </div>
-
-            {/* Typing Indicators */}
-            {Object.keys(typingUsers).filter(u => u !== roomConfig.username).length > 0 && (
-              <div className={`px-4 py-1.5 border-x text-[10px] font-mono italic flex items-center gap-1.5 flex-shrink-0 ${style.body} ${style.textMuted}`}>
-                <div className="flex gap-0.5">
-                  <span className="w-1.5 h-1.5 rounded-full bg-indigo-500 animate-bounce" />
-                  <span className="w-1.5 h-1.5 rounded-full bg-indigo-500 animate-bounce [animation-delay:0.2s]" />
-                  <span className="w-1.5 h-1.5 rounded-full bg-indigo-500 animate-bounce [animation-delay:0.4s]" />
-                </div>
-                <span>
-                  {Object.keys(typingUsers).filter(u => u !== roomConfig.username).join(", ")} yazıyor...
-                </span>
-              </div>
-            )}
-
-            {/* Chat bottom input area */}
-            <div className={`p-4 rounded-b-2xl border-b border-x flex-shrink-0 transition-colors duration-300 ${style.input}`}>
-              <form onSubmit={handleSendMessage} className="flex items-center gap-2">
-                
-                {/* Media options when not recording */}
-                {!isRecording && (
-                  <>
-                    <label className={`p-3 border rounded-xl flex items-center justify-center transition-all cursor-pointer ${style.btnSecondary}`} title="Resim Gönder">
-                      <Image size={16} />
-                      <input
-                        type="file"
-                        accept="image/*"
-                        onChange={handleImageSelect}
-                        className="hidden"
-                      />
-                    </label>
-
-                    <button
-                      type="button"
-                      onClick={startRecording}
-                      className={`p-3 border rounded-xl flex items-center justify-center transition-all cursor-pointer ${style.btnSecondary}`}
-                      title="Sesli Mesaj Gönder"
-                    >
-                      <Mic size={16} />
-                    </button>
-                  </>
-                )}
-
-                {/* Voice message recording status */}
-                {isRecording && (
-                  <div className="flex-1 flex items-center justify-between px-4 py-2 bg-red-50 border border-red-200 rounded-xl text-red-600 text-xs font-bold">
-                    <div className="flex items-center gap-2">
-                      <span className="w-2 h-2 rounded-full bg-red-600 animate-ping" />
-                      <span>Ses Kaydediliyor ({recordingDuration}s / 20s)</span>
-                    </div>
-                    <div className="flex items-center gap-1.5">
-                      <button
-                        type="button"
-                        onClick={stopRecording}
-                        className="px-2 py-1 bg-red-600 text-white rounded-lg hover:bg-red-700 flex items-center gap-1 cursor-pointer transition-colors text-[10px]"
-                        title="Kaydı Gönder"
-                      >
-                        <Square size={10} />
-                        <span>Bitir</span>
-                      </button>
-                      <button
-                        type="button"
-                        onClick={cancelRecording}
-                        className="px-2 py-1 bg-gray-200 text-gray-700 rounded-lg hover:bg-gray-300 flex items-center gap-1 cursor-pointer transition-colors text-[10px]"
-                        title="Vazgeç"
-                      >
-                        <X size={10} />
-                        <span>İptal</span>
-                      </button>
-                    </div>
-                  </div>
-                )}
-
-                {/* Text input, hidden while recording */}
-                {!isRecording && (
-                  <input
-                    type="text"
-                    value={inputText}
-                    onChange={(e) => handleInputChange(e.target.value)}
-                    placeholder="Güvenli, şifreli mesajınızı yazın..."
-                    className={`flex-1 rounded-xl px-4 py-3 text-sm outline-none transition-all border ${style.inputText}`}
-                    disabled={sseStatus !== "connected"}
-                  />
-                )}
-
-                <button
-                  type="submit"
-                  disabled={(!inputText.trim() && !isRecording) || sseStatus !== "connected" || isSending}
-                  className="px-5 py-3 bg-indigo-600 hover:bg-indigo-700 disabled:bg-gray-150 disabled:text-gray-400 text-white font-bold rounded-xl flex items-center justify-center transition-all cursor-pointer disabled:cursor-not-allowed shadow-sm hover:shadow-indigo-600/10 active:scale-95 flex-shrink-0"
-                  title="Mesajı şifrele ve gönder"
-                >
-                  <Send size={16} className={isSending ? "animate-pulse" : ""} />
-                </button>
-              </form>
-
-              {/* Status Alert or Error Banner */}
-              {errorText && (
-                <p className="text-red-500 text-xs mt-2 text-center font-medium">
-                  {errorText}
-                </p>
-              )}
-              
-              <div className={`mt-2.5 flex items-center justify-between text-[11px] ${style.textMuted}`}>
-                <div className="flex items-center gap-1.5">
-                  <Shield size={12} className="text-indigo-500/70" />
-                  <span>Şifreleme modu: <span className="text-indigo-600 font-semibold font-mono">CLIENT AES-GCM (256-bit)</span></span>
-                </div>
-                <span>Mesajlar sunucuya asla düz metin olarak gitmez.</span>
-              </div>
             </div>
           </motion.div>
         )}
