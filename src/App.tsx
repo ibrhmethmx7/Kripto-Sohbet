@@ -215,7 +215,17 @@ export default function App() {
         const ntfyData = JSON.parse(event.data);
         if (ntfyData.event !== "message") return; // skip open/keepalive
 
-        const payload = JSON.parse(ntfyData.message);
+        let messageStr = ntfyData.message;
+        if (ntfyData.attachment && ntfyData.attachment.url) {
+          try {
+            const res = await fetch(ntfyData.attachment.url);
+            messageStr = await res.text();
+          } catch (err) {
+            console.error("Ek indirilemedi:", err);
+          }
+        }
+
+        const payload = JSON.parse(messageStr);
         
         if (payload.type === "message") {
           const plainTextRaw = await decryptMessage(payload.message.ciphertext, payload.message.iv, roomConfig.passwordKey);
