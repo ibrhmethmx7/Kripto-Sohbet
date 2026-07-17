@@ -242,6 +242,15 @@ export default function App() {
         const lastMsg = sorted[sorted.length - 1];
         // Send a single read receipt for the latest message (others will be marked read up to this timestamp)
         sendReceipt(lastMsg.id, lastMsg.sender, "read");
+
+        // Mark all these messages as read locally so we don't repeat sending receipts
+        setMessages((prev) =>
+          prev.map((msg) =>
+            msg.sender !== roomConfig.username && msg.timestamp <= lastMsg.timestamp
+              ? { ...msg, deliveryState: "read" }
+              : msg
+          )
+        );
       }
     };
     
@@ -317,6 +326,8 @@ export default function App() {
           
           setMessages((prev) => {
             if (prev.some((m) => m.id === payload.message.id)) return prev;
+            const isMe = payload.message.sender === roomConfig.username;
+            const isFocused = document.hasFocus() && !document.hidden;
             const updated = [
               ...prev,
               {
@@ -326,12 +337,12 @@ export default function App() {
                 quotedMsgId,
                 quotedMsgSender,
                 quotedMsgText,
+                deliveryState: isMe ? "sent" : (isFocused ? "read" : "delivered"),
                 decrypted: !plainTextRaw.startsWith("[Deşifre Edilemedi")
               }
             ];
 
             // Send delivered and read receipt for new real-time messages
-            const isMe = payload.message.sender === roomConfig.username;
             if (!isMe && isHistoryLoadedRef.current) {
               sendReceipt(payload.message.id, payload.message.sender, "delivered");
               if (document.hasFocus() && !document.hidden) {
