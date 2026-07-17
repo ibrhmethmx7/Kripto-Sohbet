@@ -91,12 +91,12 @@ export default function App() {
     setUsernameInput(generateRandomUsername());
   }, []);
 
-  // Set up EventSource for real-time room streaming
+  // Set up EventSource for real-time room streaming via ntfy.sh
   useEffect(() => {
     if (!roomConfig) return;
 
     setSseStatus("connecting");
-    const eventSource = new EventSource(`/api/rooms/${roomConfig.roomId}/stream`);
+    const eventSource = new EventSource(`https://ntfy.sh/${roomConfig.roomId}/sse?since=all`);
 
     eventSource.onopen = () => {
       setSseStatus("connected");
@@ -105,28 +105,19 @@ export default function App() {
 
     eventSource.onmessage = async (event) => {
       try {
-        const payload = JSON.parse(event.data);
+        const ntfyData = JSON.parse(event.data);
+        if (ntfyData.event !== "message") return; // skip open/keepalive
+
+        // The user message payload is stored as a string inside ntfyData.message
+        const payload = JSON.parse(ntfyData.message);
         
-        if (payload.type === "init") {
-          // Decrypt the message list in parallel
-          const decryptedList = await Promise.all(
-            payload.messages.map(async (msg: EncryptedMessage) => {
-              const plainText = await decryptMessage(msg.ciphertext, msg.iv, roomConfig.passwordKey);
-              return {
-                ...msg,
-                text: plainText,
-                decrypted: !plainText.startsWith("[Deşifre Edilemedi")
-              };
-            })
-          );
-          setMessages(decryptedList);
-        } else if (payload.type === "message") {
+        if (payload.type === "message") {
           const plainText = await decryptMessage(payload.message.ciphertext, payload.message.iv, roomConfig.passwordKey);
           
           setMessages((prev) => {
             // Guard against duplicates
             if (prev.some((m) => m.id === payload.message.id)) return prev;
-            return [
+            const updated = [
               ...prev,
               {
                 ...payload.message,
@@ -134,6 +125,7 @@ export default function App() {
                 decrypted: !plainText.startsWith("[Deşifre Edilemedi")
               }
             ];
+            return updated.sort((a, b) => a.timestamp - b.timestamp);
           });
         } else if (payload.type === "clear") {
           setMessages([]);
@@ -203,7 +195,7 @@ export default function App() {
     setTimeout(() => setCopiedKey(false), 2000);
   };
 
-  // Send encrypted message
+  // Send encrypted message via ntfy.sh
   const handleSendMessage = async (e: FormEvent) => {
     e.preventDefault();
     if (!inputText.trim() || !roomConfig || isSending) return;
@@ -216,16 +208,22 @@ export default function App() {
       // Encrypt completely on the client side
       const { ciphertext, iv } = await encryptMessage(textToSend, roomConfig.passwordKey);
 
-      const response = await fetch(`/api/rooms/${roomConfig.roomId}/messages`, {
+      const messageObj = {
+        id: `msg_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`,
+        sender: roomConfig.username,
+        ciphertext,
+        iv,
+        timestamp: Date.now()
+      };
+
+      const payload = {
+        type: "message",
+        message: messageObj
+      };
+
+      const response = await fetch(`https://ntfy.sh/${roomConfig.roomId}`, {
         method: "POST",
-        headers: {
-          "Content-Type": "application/json"
-        },
-        body: JSON.stringify({
-          sender: roomConfig.username,
-          ciphertext,
-          iv
-        })
+        body: JSON.stringify(payload)
       });
 
       if (!response.ok) {
@@ -244,11 +242,16 @@ export default function App() {
   // Clear / Self-destruct chat history
   const handleClearHistory = async () => {
     if (!roomConfig) return;
-    if (!confirm("Bu odadaki tüm mesaj geçmişi sunucudan tamamen silinecektir. Emin misiniz?")) return;
+    if (!confirm("Bu odadaki tüm mesaj geçmişi temizlenecektir. Emin misiniz?")) return;
 
     try {
-      const response = await fetch(`/api/rooms/${roomConfig.roomId}/clear`, {
-        method: "POST"
+      const payload = {
+        type: "clear"
+      };
+
+      const response = await fetch(`https://ntfy.sh/${roomConfig.roomId}`, {
+        method: "POST",
+        body: JSON.stringify(payload)
       });
       if (!response.ok) {
         throw new Error("Geçmiş silinemedi.");
