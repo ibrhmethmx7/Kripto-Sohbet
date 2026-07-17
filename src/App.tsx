@@ -217,7 +217,7 @@ export default function App() {
         status,
         sender: roomConfig.username
       };
-      await fetch(`https://ntfy.sh/${encodeURIComponent(roomConfig.roomId)}`, {
+      await fetch(`https://ntfy.sh/kripto-sohbet-${encodeURIComponent(roomConfig.roomId)}`, {
         method: "POST",
         body: JSON.stringify(payload)
       });
@@ -259,7 +259,7 @@ export default function App() {
       isHistoryLoadedRef.current = true;
     }, 3000);
 
-    const eventSource = new EventSource(`https://ntfy.sh/${encodeURIComponent(roomConfig.roomId)}/sse?since=all`);
+    const eventSource = new EventSource(`https://ntfy.sh/kripto-sohbet-${encodeURIComponent(roomConfig.roomId)}/sse?since=all`);
 
     eventSource.onopen = () => {
       setSseStatus("connected");
@@ -485,7 +485,7 @@ export default function App() {
           type: "presence",
           username: roomConfig.username
         };
-        await fetch(`https://ntfy.sh/${encodeURIComponent(roomConfig.roomId)}`, {
+        await fetch(`https://ntfy.sh/kripto-sohbet-${encodeURIComponent(roomConfig.roomId)}`, {
           method: "POST",
           body: JSON.stringify(payload)
         });
@@ -581,7 +581,7 @@ export default function App() {
   const sendTypingSignal = async (isTyping: boolean) => {
     if (!roomConfig) return;
     try {
-      await fetch(`https://ntfy.sh/${encodeURIComponent(roomConfig.roomId)}`, {
+      await fetch(`https://ntfy.sh/kripto-sohbet-${encodeURIComponent(roomConfig.roomId)}`, {
         method: "POST",
         body: JSON.stringify({
           type: "typing",
@@ -614,7 +614,7 @@ export default function App() {
         emoji,
         sender: roomConfig.username
       };
-      await fetch(`https://ntfy.sh/${encodeURIComponent(roomConfig.roomId)}`, {
+      await fetch(`https://ntfy.sh/kripto-sohbet-${encodeURIComponent(roomConfig.roomId)}`, {
         method: "POST",
         body: JSON.stringify(payload)
       });
@@ -653,7 +653,7 @@ export default function App() {
     let response;
     if (payloadStr.length > 4000) {
       // Use PUT to upload as attachment
-      response = await fetch(`https://ntfy.sh/${encodeURIComponent(roomConfig.roomId)}`, {
+      response = await fetch(`https://ntfy.sh/kripto-sohbet-${encodeURIComponent(roomConfig.roomId)}`, {
         method: "PUT",
         headers: {
           "Filename": "message.json",
@@ -663,7 +663,7 @@ export default function App() {
       });
     } else {
       // Use standard POST
-      response = await fetch(`https://ntfy.sh/${encodeURIComponent(roomConfig.roomId)}`, {
+      response = await fetch(`https://ntfy.sh/kripto-sohbet-${encodeURIComponent(roomConfig.roomId)}`, {
         method: "POST",
         body: payloadStr
       });
@@ -701,9 +701,12 @@ export default function App() {
       };
       await publishPayload(payload);
       setReplyingTo(null);
-    } catch (err) {
+    } catch (err: any) {
       console.error("Media message sending failed:", err);
-      setErrorText("Medya gönderilemedi. Lütfen tekrar deneyin.");
+      const suffix = err.message?.includes("403") 
+        ? " (Bu oda adı ntfy.sh üzerinde rezerve edilmiş olabilir, lütfen başka bir oda adı seçin)"
+        : "";
+      setErrorText(`Medya gönderilemedi: ${err.message || err}${suffix}`);
     } finally {
       setIsSending(false);
     }
@@ -910,7 +913,10 @@ export default function App() {
       setReplyingTo(null);
     } catch (err: any) {
       console.error("Mesaj gönderme hatası:", err);
-      setErrorText("Mesaj gönderilemedi. Lütfen bağlantınızı kontrol edin.");
+      const suffix = err.message?.includes("403") 
+        ? " (Bu oda adı ntfy.sh üzerinde rezerve edilmiş olabilir, lütfen başka bir oda adı seçin)"
+        : "";
+      setErrorText(`Mesaj gönderilemedi: ${err.message || err}${suffix}`);
       setInputText(textToSend);
     } finally {
       setIsSending(false);
@@ -927,7 +933,7 @@ export default function App() {
         type: "clear"
       };
 
-      const response = await fetch(`https://ntfy.sh/${encodeURIComponent(roomConfig.roomId)}`, {
+      const response = await fetch(`https://ntfy.sh/kripto-sohbet-${encodeURIComponent(roomConfig.roomId)}`, {
         method: "POST",
         body: JSON.stringify(payload)
       });
