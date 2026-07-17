@@ -232,11 +232,17 @@ export default function App() {
     if (!roomConfig || messages.length === 0) return;
     
     const handleFocus = () => {
-      messages.forEach((msg) => {
-        if (msg.sender !== roomConfig.username && msg.deliveryState !== "read") {
-          sendReceipt(msg.id, msg.sender, "read");
-        }
-      });
+      // Find all messages from the other user that are not read
+      const unreadFromOthers = messages.filter(
+        (msg) => msg.sender !== roomConfig.username && msg.deliveryState !== "read"
+      );
+      if (unreadFromOthers.length > 0) {
+        // Sort by timestamp to find the latest message
+        const sorted = [...unreadFromOthers].sort((a, b) => a.timestamp - b.timestamp);
+        const lastMsg = sorted[sorted.length - 1];
+        // Send a single read receipt for the latest message (others will be marked read up to this timestamp)
+        sendReceipt(lastMsg.id, lastMsg.sender, "read");
+      }
     };
     
     window.addEventListener("focus", handleFocus);
@@ -370,9 +376,12 @@ export default function App() {
             )
           );
         } else if (payload.type === "receipt") {
-          setMessages((prev) =>
-            prev.map((msg) => {
-              if (msg.id === payload.msgId) {
+          setMessages((prev) => {
+            const targetMsg = prev.find((m) => m.id === payload.msgId);
+            if (!targetMsg) return prev;
+            return prev.map((msg) => {
+              // Update status of all my sent messages that are older than or equal to the targetMsg
+              if (msg.sender === roomConfig.username && msg.timestamp <= targetMsg.timestamp) {
                 const currentState = msg.deliveryState || "sent";
                 if (payload.status === "read") {
                   return { ...msg, deliveryState: "read" };
@@ -381,8 +390,8 @@ export default function App() {
                 }
               }
               return msg;
-            })
-          );
+            });
+          });
         } else if (payload.type === "presence") {
           // Track active users
           setActiveUsers((prev) => ({
@@ -497,7 +506,7 @@ export default function App() {
     // Send immediately on join
     sendPresence();
 
-    const interval = setInterval(sendPresence, 20000);
+    const interval = setInterval(sendPresence, 60000);
     return () => clearInterval(interval);
   }, [roomConfig]);
 
@@ -506,7 +515,7 @@ export default function App() {
     if (!roomConfig) return;
 
     const pruneInterval = setInterval(() => {
-      const threshold = Date.now() - 45000;
+      const threshold = Date.now() - 130000;
       setActiveUsers((prev) => {
         const cleaned: Record<string, number> = {};
         let changed = false;
@@ -523,7 +532,7 @@ export default function App() {
         }
         return changed ? cleaned : prev;
       });
-    }, 5000);
+    }, 10000);
 
     return () => clearInterval(pruneInterval);
   }, [roomConfig]);
@@ -567,7 +576,7 @@ export default function App() {
     if (!roomConfig) return;
 
     const now = Date.now();
-    if (now - lastTypingTimeRef.current > 4000) {
+    if (now - lastTypingTimeRef.current > 15000) {
       lastTypingTimeRef.current = now;
       sendTypingSignal(true);
     }
@@ -575,7 +584,7 @@ export default function App() {
     if (typingTimeoutRef.current) clearTimeout(typingTimeoutRef.current);
     typingTimeoutRef.current = setTimeout(() => {
       sendTypingSignal(false);
-    }, 2500);
+    }, 4000);
   };
 
   const sendTypingSignal = async (isTyping: boolean) => {
