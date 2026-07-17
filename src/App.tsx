@@ -1112,10 +1112,10 @@ export default function App() {
                     className={`px-2 py-1.5 rounded-lg text-xs font-semibold cursor-pointer outline-none border transition-all ${style.btnSecondary}`}
                     title="Arayüz temasını değiştir"
                   >
-                    <option value="slate-light">☀️ Açık Tema</option>
-                    <option value="slate-dark">🌙 Karanlık Tema</option>
-                    <option value="cyber-neon">⚡ Cyber Neon</option>
-                    <option value="glassmorphism">❄️ Cam Efekti</option>
+                    <option value="slate-light">Açık Tema</option>
+                    <option value="slate-dark">Karanlık Tema</option>
+                    <option value="cyber-neon">Cyber Neon</option>
+                    <option value="glassmorphism">Cam Efekti</option>
                   </select>
                 </div>
 
