@@ -140,7 +140,7 @@ export default function App() {
   const [usernameInput, setUsernameInput] = useState("");
 
   const [roomConfig, setRoomConfig] = useState<RoomConfig & { serverUrl?: string } | null>(null);
-  const [selectedServer, setSelectedServer] = useState<string>("https://ntfy.sh");
+  const [selectedServer, setSelectedServer] = useState<string>("local");
   
   // Real-time states
   const [messages, setMessages] = useState<LocalMessage[]>([]);
@@ -279,7 +279,9 @@ export default function App() {
     }, 3000);
 
     const server = roomConfig.serverUrl || "https://ntfy.sh";
-    const eventSource = new EventSource(`${server}/kripto-sohbet-${encodeURIComponent(roomConfig.roomId)}/sse?since=all`);
+    const eventSource = server === "local"
+      ? new EventSource(`/api/rooms/${encodeURIComponent(roomConfig.roomId)}/stream`)
+      : new EventSource(`${server}/kripto-sohbet-${encodeURIComponent(roomConfig.roomId)}/sse?since=all`);
 
     eventSource.onopen = () => {
       setSseStatus("connected");
@@ -289,20 +291,73 @@ export default function App() {
     eventSource.onmessage = async (event) => {
       try {
         const ntfyData = JSON.parse(event.data);
-        if (ntfyData.event !== "message") return; // skip open/keepalive
+        
+        let payload;
+        if (server === "local") {
+          payload = ntfyData;
+        } else {
+          if (ntfyData.event !== "message") return; // skip open/keepalive
 
-        let messageStr = ntfyData.message;
-        if (ntfyData.attachment && ntfyData.attachment.url) {
-          try {
-            const res = await fetch(ntfyData.attachment.url);
-            messageStr = await res.text();
-          } catch (err) {
-            console.error("Ek indirilemedi:", err);
+          let messageStr = ntfyData.message;
+          if (ntfyData.attachment && ntfyData.attachment.url) {
+            try {
+              const res = await fetch(ntfyData.attachment.url);
+              messageStr = await res.text();
+            } catch (err) {
+              console.error("Ek indirilemedi:", err);
+            }
           }
+          payload = JSON.parse(messageStr);
+        }
+        
+        if (payload.type === "init") {
+          // Decrypt and load history
+          const decryptedList = await Promise.all(
+            (payload.messages || []).map(async (msg: any) => {
+              let text = "[Deşifre Edilemedi]";
+              let mediaType: "text" | "image" | "audio" = "text";
+              let quotedMsgId: string | undefined = undefined;
+              let quotedMsgSender: string | undefined = undefined;
+              let quotedMsgText: string | undefined = undefined;
+              
+              try {
+                const plainTextRaw = await decryptMessage(msg.ciphertext, msg.iv, roomConfig.passwordKey);
+                text = plainTextRaw;
+                try {
+                  const parsed = JSON.parse(plainTextRaw);
+                  if (parsed && typeof parsed === "object") {
+                    if ("mediaType" in parsed) {
+                      text = parsed.text;
+                      mediaType = parsed.mediaType;
+                    }
+                    if ("quotedMsgId" in parsed) {
+                      quotedMsgId = parsed.quotedMsgId;
+                      quotedMsgSender = parsed.quotedMsgSender;
+                      quotedMsgText = parsed.quotedMsgText;
+                    }
+                  }
+                } catch {
+                  // Keep text as plain text
+                }
+              } catch (err) {
+                console.error("Message decryption failed on init:", err);
+              }
+              
+              return {
+                ...msg,
+                text,
+                mediaType,
+                quotedMsgId,
+                quotedMsgSender,
+                quotedMsgText,
+                decrypted: text !== "[Deşifre Edilemedi]"
+              };
+            })
+          );
+          setMessages(decryptedList);
+          return;
         }
 
-        const payload = JSON.parse(messageStr);
-        
         if (payload.type === "message") {
           const plainTextRaw = await decryptMessage(payload.message.ciphertext, payload.message.iv, roomConfig.passwordKey);
           
@@ -680,22 +735,33 @@ export default function App() {
     
     const server = roomConfig.serverUrl || "https://ntfy.sh";
     let response;
-    if (payloadStr.length > 4000) {
-      // Use PUT to upload as attachment
-      response = await fetch(`${server}/kripto-sohbet-${encodeURIComponent(roomConfig.roomId)}`, {
-        method: "PUT",
+    
+    if (server === "local") {
+      response = await fetch(`/api/rooms/${roomConfig.roomId}/messages`, {
+        method: "POST",
         headers: {
-          "Filename": "message.json",
-          "X-Message": "Sifreli Medya"
+          "Content-Type": "application/json"
         },
         body: payloadStr
       });
     } else {
-      // Use standard POST
-      response = await fetch(`${server}/kripto-sohbet-${encodeURIComponent(roomConfig.roomId)}`, {
-        method: "POST",
-        body: payloadStr
-      });
+      if (payloadStr.length > 4000) {
+        // Use PUT to upload as attachment
+        response = await fetch(`${server}/kripto-sohbet-${encodeURIComponent(roomConfig.roomId)}`, {
+          method: "PUT",
+          headers: {
+            "Filename": "message.json",
+            "X-Message": "Sifreli Medya"
+          },
+          body: payloadStr
+        });
+      } else {
+        // Use standard POST
+        response = await fetch(`${server}/kripto-sohbet-${encodeURIComponent(roomConfig.roomId)}`, {
+          method: "POST",
+          body: payloadStr
+        });
+      }
     }
     
     if (!response.ok) {
@@ -965,12 +1031,21 @@ export default function App() {
       };
 
       const server = roomConfig.serverUrl || "https://ntfy.sh";
-      const response = await fetch(`${server}/kripto-sohbet-${encodeURIComponent(roomConfig.roomId)}`, {
-        method: "POST",
-        body: JSON.stringify(payload)
-      });
-      if (!response.ok) {
-        throw new Error("Geçmiş silinemedi.");
+      if (server === "local") {
+        const response = await fetch(`/api/rooms/${roomConfig.roomId}/clear`, {
+          method: "POST"
+        });
+        if (!response.ok) {
+          throw new Error("Geçmiş silinemedi.");
+        }
+      } else {
+        const response = await fetch(`${server}/kripto-sohbet-${encodeURIComponent(roomConfig.roomId)}`, {
+          method: "POST",
+          body: JSON.stringify(payload)
+        });
+        if (!response.ok) {
+          throw new Error("Geçmiş silinemedi.");
+        }
       }
     } catch (err) {
       console.error("Geçmişi temizleme hatası:", err);
@@ -1107,15 +1182,16 @@ export default function App() {
                 {/* ntfy Server Option Selection */}
                 <div className="space-y-1.5">
                   <label className="text-xs font-semibold flex justify-between items-center">
-                    <span>ntfy Sunucusu</span>
-                    <span className="text-[9px] px-1.5 py-0.5 bg-gray-100 dark:bg-slate-800 rounded-md text-gray-400">Rate-limit aşımında değiştirin</span>
+                    <span>Haberleşme Sunucusu</span>
+                    <span className="text-[9px] px-1.5 py-0.5 bg-gray-100 dark:bg-slate-800 rounded-md text-gray-400">Sunucu kaynağı</span>
                   </label>
                   <select
                     value={selectedServer}
                     onChange={(e) => setSelectedServer(e.target.value)}
                     className={`w-full px-3 py-2.5 rounded-lg text-sm border outline-none font-semibold ${style.inputText}`}
                   >
-                    <option value="https://ntfy.sh">ntfy.sh (Resmi - Önerilen)</option>
+                    <option value="local">Bizim Sunucumuz (Önerilen - Limitsiz & Hızlı)</option>
+                    <option value="https://ntfy.sh">ntfy.sh (Ortak Sunucu)</option>
                     <option value="https://ntfy.adminforge.de">ntfy.adminforge.de (Almanya Alternatif)</option>
                     <option value="https://ntfy.jae.fi">ntfy.jae.fi (Finlandiya Alternatif)</option>
                   </select>

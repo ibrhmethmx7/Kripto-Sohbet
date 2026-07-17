@@ -124,9 +124,17 @@ async function startServer() {
     });
   });
 
-  // API Route: Send an encrypted message to a room
+  // API Route: Send a message or generic pub/sub payload to a room
   app.post("/api/rooms/:roomId/messages", (req, res) => {
     const { roomId } = req.params;
+
+    // Support generic control payloads (typing, presence, reaction, receipt, delete_message)
+    if (req.body && req.body.type && req.body.type !== "message") {
+      broadcastToRoom(roomId, req.body);
+      res.status(200).json({ status: "ok" });
+      return;
+    }
+
     const { sender, ciphertext, iv } = req.body;
 
     if (!sender || !ciphertext || !iv) {
