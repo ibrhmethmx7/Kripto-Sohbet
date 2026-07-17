@@ -1,5 +1,6 @@
 import { useState, useEffect, useRef, FormEvent } from "react";
 import { motion, AnimatePresence } from "motion/react";
+import { createClient } from "@supabase/supabase-js";
 import {
   Lock,
   Unlock,
@@ -140,7 +141,14 @@ export default function App() {
   const [usernameInput, setUsernameInput] = useState("");
 
   const [roomConfig, setRoomConfig] = useState<RoomConfig & { serverUrl?: string } | null>(null);
-  const [selectedServer, setSelectedServer] = useState<string>("local");
+  const [selectedServer, setSelectedServer] = useState<string>("supabase");
+  const [supabaseUrlInput, setSupabaseUrlInput] = useState(
+    localStorage.getItem("supabase_url") || import.meta.env.VITE_SUPABASE_URL || ""
+  );
+  const [supabaseKeyInput, setSupabaseKeyInput] = useState(
+    localStorage.getItem("supabase_key") || import.meta.env.VITE_SUPABASE_ANON_KEY || ""
+  );
+  const [supabaseClient, setSupabaseClient] = useState<any>(null);
   
   // Real-time states
   const [messages, setMessages] = useState<LocalMessage[]>([]);
@@ -196,9 +204,13 @@ export default function App() {
     const params = new URLSearchParams(window.location.search);
     const roomParam = params.get("room");
     const serverParam = params.get("server");
+    const sbUrlParam = params.get("sb_url");
+    const sbKeyParam = params.get("sb_key");
     
     if (roomParam) setRoomInput(roomParam);
     if (serverParam) setSelectedServer(serverParam);
+    if (sbUrlParam) setSupabaseUrlInput(sbUrlParam);
+    if (sbKeyParam) setSupabaseKeyInput(sbKeyParam);
     
     // Auto-generate a random username on mount
     setUsernameInput(generateRandomUsername());
@@ -268,7 +280,7 @@ export default function App() {
 
   // Set up EventSource for real-time room streaming via ntfy.sh
   useEffect(() => {
-    if (!roomConfig) return;
+    if (!roomConfig || roomConfig.serverUrl === "supabase") return;
 
     setSseStatus("connecting");
     isHistoryLoadedRef.current = false;
@@ -507,6 +519,261 @@ export default function App() {
     };
   }, [roomConfig, soundEnabled, notificationsEnabled]);
 
+  // Set up Supabase Realtime & history load
+  useEffect(() => {
+    if (!roomConfig || roomConfig.serverUrl !== "supabase" || !supabaseClient) return;
+
+    setSseStatus("connecting");
+    isHistoryLoadedRef.current = false;
+
+    // Load initial history from Supabase database
+    const loadHistory = async () => {
+      try {
+        const { data, error } = await supabaseClient
+          .from("kripto_messages")
+          .select("*")
+          .eq("room_id", roomConfig.roomId)
+          .order("timestamp", { ascending: true })
+          .limit(100);
+
+        if (error) throw error;
+
+        const decryptedList = await Promise.all(
+          (data || []).map(async (msg: any) => {
+            let text = "[Deşifre Edilemedi]";
+            let mediaType: "text" | "image" | "audio" = "text";
+            let quotedMsgId: string | undefined = undefined;
+            let quotedMsgSender: string | undefined = undefined;
+            let quotedMsgText: string | undefined = undefined;
+            
+            try {
+              const plainTextRaw = await decryptMessage(msg.ciphertext, msg.iv, roomConfig.passwordKey);
+              text = plainTextRaw;
+              try {
+                const parsed = JSON.parse(plainTextRaw);
+                if (parsed && typeof parsed === "object") {
+                  if ("mediaType" in parsed) {
+                    text = parsed.text;
+                    mediaType = parsed.mediaType;
+                  }
+                  if ("quotedMsgId" in parsed) {
+                    quotedMsgId = parsed.quotedMsgId;
+                    quotedMsgSender = parsed.quotedMsgSender;
+                    quotedMsgText = parsed.quotedMsgText;
+                  }
+                }
+              } catch {
+                // Keep text as plain text
+              }
+            } catch (err) {
+              console.error("Message decryption failed on Supabase init:", err);
+            }
+            
+            return {
+              ...msg,
+              text,
+              mediaType,
+              quotedMsgId,
+              quotedMsgSender,
+              quotedMsgText,
+              decrypted: text !== "[Deşifre Edilemedi]"
+            };
+          })
+        );
+
+        setMessages(decryptedList);
+        setSseStatus("connected");
+        setErrorText("");
+        
+        // After loading, mark history loaded to prevent playing sound for past messages
+        setTimeout(() => {
+          isHistoryLoadedRef.current = true;
+        }, 1500);
+      } catch (err: any) {
+        console.error("History load failed:", err);
+        setErrorText("Mesaj geçmişi yüklenemedi: " + err.message);
+        setSseStatus("disconnected");
+      }
+    };
+
+    loadHistory();
+
+    // Subscribe to Supabase Realtime channel for control signals
+    const channel = supabaseClient.channel(`room-${roomConfig.roomId}`, {
+      config: {
+        broadcast: { self: false }
+      }
+    });
+
+    // Listen to database inserts (new E2EE messages)
+    const dbSubscription = supabaseClient
+      .channel(`db-changes-${roomConfig.roomId}`)
+      .on(
+        "postgres_changes",
+        {
+          event: "INSERT",
+          schema: "public",
+          table: "kripto_messages",
+          filter: `room_id=eq.${roomConfig.roomId}`
+        },
+        async (payload: any) => {
+          const newMsg = payload.new;
+          
+          try {
+            const plainTextRaw = await decryptMessage(newMsg.ciphertext, newMsg.iv, roomConfig.passwordKey);
+            let text = plainTextRaw;
+            let mediaType: "text" | "image" | "audio" = "text";
+            let quotedMsgId: string | undefined = undefined;
+            let quotedMsgSender: string | undefined = undefined;
+            let quotedMsgText: string | undefined = undefined;
+            
+            try {
+              const parsed = JSON.parse(plainTextRaw);
+              if (parsed && typeof parsed === "object") {
+                if ("mediaType" in parsed) {
+                  text = parsed.text;
+                  mediaType = parsed.mediaType;
+                }
+                if ("quotedMsgId" in parsed) {
+                  quotedMsgId = parsed.quotedMsgId;
+                  quotedMsgSender = parsed.quotedMsgSender;
+                  quotedMsgText = parsed.quotedMsgText;
+                }
+              }
+            } catch {
+              // Plain text
+            }
+            
+            setMessages((prev) => {
+              if (prev.some((m) => m.id === newMsg.id)) return prev;
+              
+              const isMe = newMsg.sender === roomConfig.username;
+              const isFocused = document.hasFocus() && !document.hidden;
+              
+              const updated = [
+                ...prev,
+                {
+                  ...newMsg,
+                  text,
+                  mediaType,
+                  quotedMsgId,
+                  quotedMsgSender,
+                  quotedMsgText,
+                  deliveryState: isMe ? "sent" : (isFocused ? "read" : "delivered"),
+                  decrypted: text !== "[Deşifre Edilemedi]"
+                }
+              ];
+              
+              if (!isMe && isHistoryLoadedRef.current) {
+                sendReceipt(newMsg.id, newMsg.sender, "delivered");
+                if (isFocused) {
+                  sendReceipt(newMsg.id, newMsg.sender, "read");
+                }
+              }
+
+              if (isMe || isAtBottomRef.current) {
+                setTimeout(() => {
+                  scrollToBottom("smooth");
+                }, 50);
+              }
+
+              if (isHistoryLoadedRef.current && !isMe) {
+                if (soundEnabled) {
+                  playNotificationSound();
+                }
+                
+                let notifyText = text;
+                if (mediaType === "image") notifyText = "📷 Fotoğraf gönderdi";
+                else if (mediaType === "audio") notifyText = "🎤 Sesli mesaj gönderdi";
+
+                if (notificationsEnabled && document.hidden) {
+                  showBrowserNotification(
+                    `Kripto Sohbet - ${newMsg.sender}`,
+                    notifyText
+                  );
+                }
+                if (!isAtBottomRef.current) {
+                  setUnreadCount((prev) => prev + 1);
+                }
+              }
+
+              return updated.sort((a, b) => a.timestamp - b.timestamp);
+            });
+          } catch (err) {
+            console.error("Failed to decrypt real-time Supabase message:", err);
+          }
+        }
+      )
+      .subscribe();
+
+    // Listen to ephemeral broadcast events (typing, presence, reactions, receipts, delete_message, clear)
+    channel
+      .on("broadcast", { event: "control-signal" }, (event: any) => {
+        const payload = event.payload;
+        if (!payload) return;
+
+        if (payload.type === "delete_message") {
+          setMessages((prev) =>
+            prev.map((msg) =>
+              msg.id === payload.messageId ? { ...msg, deleted: true, text: "Bu mesaj silindi" } : msg
+            )
+          );
+        } else if (payload.type === "receipt") {
+          setMessages((prev) => {
+            const targetMsg = prev.find((m) => m.id === payload.msgId);
+            if (!targetMsg) return prev;
+            return prev.map((msg) => {
+              if (msg.sender === roomConfig.username && msg.timestamp <= targetMsg.timestamp) {
+                const currentState = msg.deliveryState || "sent";
+                if (payload.status === "read") {
+                  return { ...msg, deliveryState: "read" };
+                } else if (payload.status === "delivered" && currentState !== "read") {
+                  return { ...msg, deliveryState: "delivered" };
+                }
+              }
+              return msg;
+            });
+          });
+        } else if (payload.type === "presence") {
+          setActiveUsers((prev) => ({
+            ...prev,
+            [payload.username]: Date.now()
+          }));
+        } else if (payload.type === "typing") {
+          setTypingUsers((prev) => {
+            const copy = { ...prev };
+            if (payload.isTyping) {
+              copy[payload.username] = Date.now();
+            } else {
+              delete copy[payload.username];
+            }
+            return copy;
+          });
+        } else if (payload.type === "reaction") {
+          setReactions((prev) => {
+            const list = prev[payload.messageId] || [];
+            const filtered = list.filter((r) => r.sender !== payload.sender);
+            return {
+              ...prev,
+              [payload.messageId]: [...filtered, { emoji: payload.emoji, sender: payload.sender }]
+            };
+          });
+        } else if (payload.type === "clear") {
+          setMessages([]);
+        }
+      })
+      .subscribe((status: string) => {
+        if (status === "SUBSCRIBED") {
+          console.log("Supabase Realtime Channel subscribed!");
+        }
+      });
+
+    return () => {
+      channel.unsubscribe();
+      dbSubscription.unsubscribe();
+    };
+  }, [roomConfig, supabaseClient, soundEnabled, notificationsEnabled]);
+
   // Scroll to bottom programmatically
   const scrollToBottom = (behavior: ScrollBehavior = "smooth") => {
     const container = chatContainerRef.current;
@@ -728,14 +995,54 @@ export default function App() {
     }
   };
 
-  // Helper to publish messages via ntfy (supports auto-conversion to attachments for larger payloads)
+  // Helper to publish messages via ntfy or Supabase (supports auto-conversion to attachments for larger payloads)
   const publishPayload = async (payload: any) => {
     if (!roomConfig) return;
     const payloadStr = JSON.stringify(payload);
     
     const server = roomConfig.serverUrl || "https://ntfy.sh";
-    let response;
     
+    if (server === "supabase") {
+      if (!supabaseClient) throw new Error("Supabase client is not initialized.");
+      
+      if (payload.type === "message") {
+        const { error } = await supabaseClient
+          .from("kripto_messages")
+          .insert({
+            id: payload.message.id,
+            room_id: roomConfig.roomId,
+            sender: payload.message.sender,
+            ciphertext: payload.message.ciphertext,
+            iv: payload.message.iv,
+            timestamp: payload.message.timestamp
+          });
+        if (error) throw error;
+      } else if (payload.type === "delete_message") {
+        await supabaseClient
+          .channel(`room-${roomConfig.roomId}`)
+          .send({
+            type: "broadcast",
+            event: "control-signal",
+            payload: payload
+          });
+        
+        await supabaseClient
+          .from("kripto_messages")
+          .delete()
+          .eq("id", payload.messageId);
+      } else {
+        await supabaseClient
+          .channel(`room-${roomConfig.roomId}`)
+          .send({
+            type: "broadcast",
+            event: "control-signal",
+            payload: payload
+          });
+      }
+      return;
+    }
+    
+    let response;
     if (server === "local") {
       response = await fetch(`/api/rooms/${roomConfig.roomId}/messages`, {
         method: "POST",
@@ -944,6 +1251,23 @@ export default function App() {
       return;
     }
 
+    if (selectedServer === "supabase") {
+      if (!supabaseUrlInput.trim() || !supabaseKeyInput.trim()) {
+        setErrorText("Lütfen geçerli bir Supabase URL ve Anon Key girin.");
+        return;
+      }
+      localStorage.setItem("supabase_url", supabaseUrlInput.trim());
+      localStorage.setItem("supabase_key", supabaseKeyInput.trim());
+      
+      try {
+        const client = createClient(supabaseUrlInput.trim(), supabaseKeyInput.trim());
+        setSupabaseClient(client);
+      } catch (err: any) {
+        setErrorText("Supabase bağlantısı başlatılamadı: " + err.message);
+        return;
+      }
+    }
+
     setRoomConfig({
       roomId: room,
       passwordKey: key,
@@ -955,7 +1279,10 @@ export default function App() {
   // Generate safe shareable link
   const copyShareLink = () => {
     if (!roomConfig) return;
-    const serverParam = roomConfig.serverUrl ? `&server=${encodeURIComponent(roomConfig.serverUrl)}` : "";
+    let serverParam = roomConfig.serverUrl ? `&server=${encodeURIComponent(roomConfig.serverUrl)}` : "";
+    if (roomConfig.serverUrl === "supabase") {
+      serverParam += `&sb_url=${encodeURIComponent(supabaseUrlInput)}&sb_key=${encodeURIComponent(supabaseKeyInput)}`;
+    }
     const url = `${window.location.origin}?room=${encodeURIComponent(roomConfig.roomId)}${serverParam}`;
     navigator.clipboard.writeText(url);
     setCopiedLink(true);
@@ -1026,12 +1353,25 @@ export default function App() {
     if (!confirm("Bu odadaki tüm mesaj geçmişi temizlenecektir. Emin misiniz?")) return;
 
     try {
-      const payload = {
-        type: "clear"
-      };
-
       const server = roomConfig.serverUrl || "https://ntfy.sh";
-      if (server === "local") {
+      if (server === "supabase") {
+        if (!supabaseClient) throw new Error("Supabase is not initialized.");
+        
+        await supabaseClient
+          .channel(`room-${roomConfig.roomId}`)
+          .send({
+            type: "broadcast",
+            event: "control-signal",
+            payload: { type: "clear" }
+          });
+        
+        const { error } = await supabaseClient
+          .from("kripto_messages")
+          .delete()
+          .eq("room_id", roomConfig.roomId);
+          
+        if (error) throw error;
+      } else if (server === "local") {
         const response = await fetch(`/api/rooms/${roomConfig.roomId}/clear`, {
           method: "POST"
         });
@@ -1039,6 +1379,9 @@ export default function App() {
           throw new Error("Geçmiş silinemedi.");
         }
       } else {
+        const payload = {
+          type: "clear"
+        };
         const response = await fetch(`${server}/kripto-sohbet-${encodeURIComponent(roomConfig.roomId)}`, {
           method: "POST",
           body: JSON.stringify(payload)
@@ -1047,9 +1390,9 @@ export default function App() {
           throw new Error("Geçmiş silinemedi.");
         }
       }
-    } catch (err) {
+    } catch (err: any) {
       console.error("Geçmişi temizleme hatası:", err);
-      alert("Oda geçmişi temizlenirken bir hata oluştu.");
+      alert("Oda geçmişi temizlenirken bir hata oluştu: " + err.message);
     }
   };
 
@@ -1190,12 +1533,47 @@ export default function App() {
                     onChange={(e) => setSelectedServer(e.target.value)}
                     className={`w-full px-3 py-2.5 rounded-lg text-sm border outline-none font-semibold ${style.inputText}`}
                   >
-                    <option value="local">Bizim Sunucumuz (Önerilen - Limitsiz & Hızlı)</option>
+                    <option value="supabase">Supabase (Limitsiz & Veritabanı Geçmişli - Önerilen)</option>
+                    <option value="local">Bizim Sunucumuz (Render/Local)</option>
                     <option value="https://ntfy.sh">ntfy.sh (Ortak Sunucu)</option>
                     <option value="https://ntfy.adminforge.de">ntfy.adminforge.de (Almanya Alternatif)</option>
                     <option value="https://ntfy.jae.fi">ntfy.jae.fi (Finlandiya Alternatif)</option>
                   </select>
                 </div>
+
+                {selectedServer === "supabase" && (
+                  <motion.div
+                    initial={{ opacity: 0, height: 0 }}
+                    animate={{ opacity: 1, height: "auto" }}
+                    className="space-y-3 p-3 bg-indigo-50/10 border border-indigo-100/10 rounded-xl overflow-hidden"
+                  >
+                    <div className="space-y-1.5">
+                      <label className="text-[11px] font-semibold text-gray-400 flex justify-between">
+                        <span>Supabase API URL</span>
+                        <a href="https://supabase.com" target="_blank" rel="noreferrer" className="text-indigo-400 hover:underline">Hesap Oluştur (Ücretsiz)</a>
+                      </label>
+                      <input
+                        type="text"
+                        required
+                        value={supabaseUrlInput}
+                        onChange={(e) => setSupabaseUrlInput(e.target.value)}
+                        placeholder="https://xxxxxx.supabase.co"
+                        className={`w-full px-3 py-2 rounded-lg text-xs font-mono border ${style.inputText}`}
+                      />
+                    </div>
+                    <div className="space-y-1.5">
+                      <label className="text-[11px] font-semibold text-gray-400">Supabase Anon Key</label>
+                      <input
+                        type="password"
+                        required
+                        value={supabaseKeyInput}
+                        onChange={(e) => setSupabaseKeyInput(e.target.value)}
+                        placeholder="eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9..."
+                        className={`w-full px-3 py-2 rounded-lg text-xs font-mono border ${style.inputText}`}
+                      />
+                    </div>
+                  </motion.div>
+                )}
 
                 {/* Username Input */}
                 <div className="space-y-1.5">
