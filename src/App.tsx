@@ -526,6 +526,36 @@ export default function App() {
     }
   };
 
+  // Helper to publish messages via ntfy (supports auto-conversion to attachments for larger payloads)
+  const publishPayload = async (payload: any) => {
+    if (!roomConfig) return;
+    const payloadStr = JSON.stringify(payload);
+    
+    let response;
+    if (payloadStr.length > 4000) {
+      // Use PUT to upload as attachment
+      response = await fetch(`https://ntfy.sh/${roomConfig.roomId}`, {
+        method: "PUT",
+        headers: {
+          "Filename": "message.json",
+          "X-Message": "🔒 Şifreli Medya"
+        },
+        body: payloadStr
+      });
+    } else {
+      // Use standard POST
+      response = await fetch(`https://ntfy.sh/${roomConfig.roomId}`, {
+        method: "POST",
+        body: payloadStr
+      });
+    }
+    
+    if (!response.ok) {
+      throw new Error(`Sunucu gönderim hatası: ${response.status}`);
+    }
+    return response;
+  };
+
   // Send media messages (images, audio)
   const sendMediaMessage = async (base64Data: string, mediaType: "image" | "audio") => {
     if (!roomConfig || isSending) return;
@@ -547,10 +577,7 @@ export default function App() {
         type: "message",
         message: messageObj
       };
-      await fetch(`https://ntfy.sh/${roomConfig.roomId}`, {
-        method: "POST",
-        body: JSON.stringify(payload)
-      });
+      await publishPayload(payload);
     } catch (err) {
       console.error("Media message sending failed:", err);
       setErrorText("Medya gönderilemedi. Lütfen tekrar deneyin.");
@@ -753,14 +780,7 @@ export default function App() {
         message: messageObj
       };
 
-      const response = await fetch(`https://ntfy.sh/${roomConfig.roomId}`, {
-        method: "POST",
-        body: JSON.stringify(payload)
-      });
-
-      if (!response.ok) {
-        throw new Error("Mesaj sunucuya iletilemedi.");
-      }
+      await publishPayload(payload);
     } catch (err: any) {
       console.error("Mesaj gönderme hatası:", err);
       setErrorText("Mesaj gönderilemedi. Lütfen bağlantınızı kontrol edin.");
