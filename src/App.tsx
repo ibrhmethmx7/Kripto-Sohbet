@@ -35,6 +35,12 @@ import {
 import { RoomConfig, EncryptedMessage } from "./types";
 import { encryptMessage, decryptMessage } from "./cryptoUtils";
 
+// Supabase client - initialized once (env vars or hardcoded fallback)
+const supabase = createClient(
+  import.meta.env.VITE_SUPABASE_URL || "https://ckgltpxbcfruojjtvzzh.supabase.co",
+  import.meta.env.VITE_SUPABASE_ANON_KEY || "sb_publishable_Z3qq-V3JYvInT0zz5fKp0g_1y18vWzK"
+);
+
 // Notification Audio Synthesizer using Web Audio API
 function playNotificationSound() {
   try {
